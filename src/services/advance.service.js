@@ -71,8 +71,8 @@ const create = async (advanceData, userId) => {
     createdBy: userId
   });
 
-  // Populate for response
-  await advance.populate('employee', 'name cnic department advanceBalance');
+  // Populate for response (include dateOfJoining so tenureMonths virtual can compute)
+  await advance.populate('employee', 'name cnic department advanceBalance dateOfJoining');
 
   return advance;
 };

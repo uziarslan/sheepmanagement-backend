@@ -127,9 +127,11 @@ employeeSchema.virtual('totalCompensation').get(function () {
 
 // Virtual for tenure in months
 employeeSchema.virtual('tenureMonths').get(function () {
-  const endDate = this.dateOfLeaving || new Date();
-  const months = (endDate.getFullYear() - this.dateOfJoining.getFullYear()) * 12 +
-    (endDate.getMonth() - this.dateOfJoining.getMonth());
+  if (!this.dateOfJoining) return 0;
+  const joinDate = this.dateOfJoining instanceof Date ? this.dateOfJoining : new Date(this.dateOfJoining);
+  const endDate = this.dateOfLeaving ? (this.dateOfLeaving instanceof Date ? this.dateOfLeaving : new Date(this.dateOfLeaving)) : new Date();
+  const months = (endDate.getFullYear() - joinDate.getFullYear()) * 12 +
+    (endDate.getMonth() - joinDate.getMonth());
   return months;
 });
 
