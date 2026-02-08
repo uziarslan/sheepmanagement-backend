@@ -12,6 +12,8 @@ const BcsRecord = require('./bcsRecord.model');
 const HoofRecord = require('./hoofRecord.model');
 const FeedRecipe = require('./feedRecipe.model');
 const FeedApplication = require('./feedApplication.model');
+const VaccineRecipe = require('./vaccineRecipe.model');
+const VaccineApplication = require('./vaccineApplication.model');
 const Capital = require('./capital.model');
 
 module.exports = {
@@ -28,6 +30,10 @@ module.exports = {
   BcsRecord,
   HoofRecord,
   FeedRecipe,
+  FeedApplication,
+  VaccineRecipe,
+  VaccineApplication,
+  Capital,
   FeedApplication,
   Capital
 };

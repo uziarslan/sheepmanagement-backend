@@ -6,6 +6,7 @@ const employeeValidation = require('./employee.validation');
 const advanceValidation = require('./advance.validation');
 const healthValidation = require('./health.validation');
 const feedValidation = require('./feed.validation');
+const vaccinationValidation = require('./vaccination.validation');
 const capitalValidation = require('./capital.validation');
 
 module.exports = {
@@ -17,5 +18,6 @@ module.exports = {
   advanceValidation,
   healthValidation,
   feedValidation,
+  vaccinationValidation,
   capitalValidation
 };

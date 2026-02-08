@@ -50,6 +50,7 @@ const PEN_TYPES = [
 const STOCK_CATEGORIES = [
   'Feeding',
   'Medication',
+  'Farm Accessories',
   'Semen',
   'Seeds',
   'Fertilizers',
@@ -133,7 +134,7 @@ const HOOF_DIAGNOSIS = [
   'Other'
 ];
 
-const VACCINATION_SCOPES = ['All Animals', 'Shed', 'Individual Animal'];
+const VACCINATION_SCOPES = ['Pen', 'Individual', 'Multiple'];
 const DEWORMING_SCOPES = ['Shed', 'Individual Animal'];
 
 const CURE_STATUSES = ['Cured', 'Uncured', 'In Treatment'];

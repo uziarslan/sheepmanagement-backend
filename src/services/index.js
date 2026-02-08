@@ -6,6 +6,7 @@ const employeeService = require('./employee.service');
 const advanceService = require('./advance.service');
 const healthService = require('./health.service');
 const feedService = require('./feed.service');
+const vaccinationService = require('./vaccination.service');
 const capitalService = require('./capital.service');
 const dashboardService = require('./dashboard.service');
 
@@ -18,6 +19,7 @@ module.exports = {
   advanceService,
   healthService,
   feedService,
+  vaccinationService,
   capitalService,
   dashboardService
 };

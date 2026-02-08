@@ -9,6 +9,7 @@ const employeeRoutes = require('./employee.routes');
 const advanceRoutes = require('./advance.routes');
 const healthRoutes = require('./health.routes');
 const feedRoutes = require('./feed.routes');
+const vaccinationRoutes = require('./vaccination.routes');
 const capitalRoutes = require('./capital.routes');
 const dashboardRoutes = require('./dashboard.routes');
 
@@ -21,6 +22,7 @@ router.use('/employees', employeeRoutes);
 router.use('/advances', advanceRoutes);
 router.use('/health', healthRoutes);
 router.use('/feed', feedRoutes);
+router.use('/vaccination', vaccinationRoutes);
 router.use('/capital', capitalRoutes);
 router.use('/dashboard', dashboardRoutes);
 

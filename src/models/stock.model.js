@@ -19,6 +19,29 @@ const stockSchema = new mongoose.Schema(
       required: [true, 'Unit is required'],
       enum: STOCK_UNITS
     },
+    purchaseDate: {
+      type: Date
+    },
+    packQuantity: {
+      type: Number,
+      min: [0, 'Quantity cannot be negative']
+    },
+    unitSize: {
+      type: Number,
+      min: [0, 'Unit size cannot be negative']
+    },
+    totalQuantity: {
+      type: Number,
+      min: [0, 'Total quantity cannot be negative']
+    },
+    totalPrice: {
+      type: Number,
+      min: [0, 'Total price cannot be negative']
+    },
+    costPerUnit: {
+      type: Number,
+      min: [0, 'Cost per unit cannot be negative']
+    },
     isStockItem: {
       type: Boolean,
       default: true
@@ -106,9 +129,25 @@ stockSchema.virtual('isExpired').get(function () {
   return new Date() > this.expiryDate;
 });
 
-// Pre-save middleware to calculate opening stock amount
+// Pre-save middleware to calculate quantities and stock amount
 stockSchema.pre('save', function (next) {
-  if (this.isModified('openingStockQty') || this.isModified('openingRatePerUnit')) {
+  const hasPackQuantity = this.packQuantity !== undefined && this.packQuantity !== null;
+  const hasUnitSize = this.unitSize !== undefined && this.unitSize !== null;
+
+  if (hasPackQuantity && hasUnitSize) {
+    this.totalQuantity = this.packQuantity * this.unitSize;
+  }
+
+  if (this.totalPrice !== undefined && this.totalPrice !== null && this.totalQuantity) {
+    this.costPerUnit = this.totalPrice / this.totalQuantity;
+  }
+
+  if (this.totalQuantity !== undefined && this.totalQuantity !== null &&
+      this.costPerUnit !== undefined && this.costPerUnit !== null) {
+    this.openingStockQty = this.totalQuantity;
+    this.openingRatePerUnit = this.costPerUnit;
+    this.openingStockAmount = this.totalPrice ?? (this.totalQuantity * this.costPerUnit);
+  } else if (this.isModified('openingStockQty') || this.isModified('openingRatePerUnit')) {
     this.openingStockAmount = this.openingStockQty * this.openingRatePerUnit;
   }
   
