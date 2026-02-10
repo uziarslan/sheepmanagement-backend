@@ -11,6 +11,7 @@ const healthRoutes = require('./health.routes');
 const feedRoutes = require('./feed.routes');
 const vaccinationRoutes = require('./vaccination.routes');
 const capitalRoutes = require('./capital.routes');
+const salaryRoutes = require('./salary.routes');
 const dashboardRoutes = require('./dashboard.routes');
 
 // API Routes
@@ -24,6 +25,7 @@ router.use('/health', healthRoutes);
 router.use('/feed', feedRoutes);
 router.use('/vaccination', vaccinationRoutes);
 router.use('/capital', capitalRoutes);
+router.use('/salaries', salaryRoutes);
 router.use('/dashboard', dashboardRoutes);
 
 // Health check endpoint

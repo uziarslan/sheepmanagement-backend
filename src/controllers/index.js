@@ -8,6 +8,7 @@ const healthController = require('./health.controller');
 const feedController = require('./feed.controller');
 const vaccinationController = require('./vaccination.controller');
 const capitalController = require('./capital.controller');
+const salaryController = require('./salary.controller');
 const dashboardController = require('./dashboard.controller');
 
 module.exports = {
@@ -21,5 +22,6 @@ module.exports = {
   feedController,
   vaccinationController,
   capitalController,
+  salaryController,
   dashboardController
 };

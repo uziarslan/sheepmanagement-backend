@@ -8,6 +8,7 @@ const healthService = require('./health.service');
 const feedService = require('./feed.service');
 const vaccinationService = require('./vaccination.service');
 const capitalService = require('./capital.service');
+const salaryService = require('./salary.service');
 const dashboardService = require('./dashboard.service');
 
 module.exports = {
@@ -21,5 +22,6 @@ module.exports = {
   feedService,
   vaccinationService,
   capitalService,
+  salaryService,
   dashboardService
 };

@@ -82,13 +82,14 @@ bcsRecordSchema.pre('save', async function (next) {
 
 // Virtual for BCS category
 bcsRecordSchema.virtual('bcsCategory').get(function () {
-  if (this.bcsScore <= 2) return 'Under-conditioned';
-  if (this.bcsScore <= 3) return 'Optimal';
+  // For 1-10 scale: <=4 under, 5-7 optimal, >7 over
+  if (this.bcsScore <= 4) return 'Under-conditioned';
+  if (this.bcsScore <= 7) return 'Optimal';
   return 'Over-conditioned';
 });
 
 // Static method to get animals with low BCS
-bcsRecordSchema.statics.getLowBcsAnimals = async function (threshold = 2) {
+bcsRecordSchema.statics.getLowBcsAnimals = async function (threshold = 4) {
   // Get latest BCS for each animal
   const latestBcs = await this.aggregate([
     { $sort: { animal: 1, date: -1 } },

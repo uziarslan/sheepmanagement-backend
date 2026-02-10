@@ -139,8 +139,8 @@ const DEWORMING_SCOPES = ['Shed', 'Individual Animal'];
 
 const CURE_STATUSES = ['Cured', 'Uncured', 'In Treatment'];
 
-// BCS values (1-5 scale)
-const BCS_VALUES = [1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5];
+// BCS values (1-10 scale, integers)
+const BCS_VALUES = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
 
 // Capital transaction types
 const CAPITAL_TRANSACTION_TYPES = [
