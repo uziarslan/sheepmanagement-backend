@@ -1,5 +1,5 @@
 const { salaryService } = require('../services');
-const { asyncHandler, successResponse } = require('../utils');
+const { asyncHandler, successResponse, logAction } = require('../utils');
 const { HTTP_STATUS } = require('../constants');
 
 /**
@@ -29,6 +29,19 @@ const createSalaryPayment = asyncHandler(async (req, res) => {
   res.status(HTTP_STATUS.CREATED).json(
     successResponse(payment, 'Salary paid successfully')
   );
+
+  logAction({
+    req,
+    action: 'CREATE_SALARY_PAYMENT',
+    entityType: 'SalaryPayment',
+    entityId: payment.id,
+    metadata: {
+      employee: payment.employee,
+      amount: payment.amount,
+      month: payment.month,
+      year: payment.year
+    }
+  });
 });
 
 module.exports = {

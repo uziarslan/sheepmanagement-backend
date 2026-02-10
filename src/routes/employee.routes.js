@@ -1,11 +1,12 @@
 const express = require('express');
 const router = express.Router();
 const { employeeController } = require('../controllers');
-const { authenticate, validate } = require('../middleware');
+const { authenticate, authorize, validate } = require('../middleware');
 const { employeeValidation } = require('../validations');
 
-// All routes require authentication
+// All routes require authentication and admin role
 router.use(authenticate);
+router.use(authorize('Admin'));
 
 // GET /api/employees/summary - Get employee summary
 router.get('/summary', employeeController.getSummary);
@@ -39,5 +40,12 @@ router.put(
 
 // DELETE /api/employees/:id - Delete employee
 router.delete('/:id', employeeController.remove);
+
+// PATCH /api/employees/:id/reset-password - Reset employee login password
+router.patch(
+  '/:id/reset-password',
+  validate(employeeValidation.resetEmployeePassword),
+  employeeController.resetPassword
+);
 
 module.exports = router;

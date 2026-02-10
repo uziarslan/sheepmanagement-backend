@@ -10,6 +10,7 @@ const vaccinationService = require('./vaccination.service');
 const capitalService = require('./capital.service');
 const salaryService = require('./salary.service');
 const dashboardService = require('./dashboard.service');
+const userService = require('./user.service');
 
 module.exports = {
   authService,
@@ -23,5 +24,6 @@ module.exports = {
   vaccinationService,
   capitalService,
   salaryService,
-  dashboardService
+  dashboardService,
+  userService
 };

@@ -47,6 +47,11 @@ const userSchema = new mongoose.Schema(
       type: Boolean,
       default: true
     },
+    employee: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Employee',
+      default: null
+    },
     refreshToken: {
       type: String,
       select: false
@@ -81,6 +86,7 @@ const userSchema = new mongoose.Schema(
 // Indexes
 userSchema.index({ email: 1 });
 userSchema.index({ role: 1 });
+userSchema.index({ employee: 1 });
 
 // Hash password before saving
 userSchema.pre('save', async function (next) {

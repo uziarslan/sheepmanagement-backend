@@ -1,5 +1,5 @@
 const { employeeService } = require('../services');
-const { asyncHandler, successResponse } = require('../utils');
+const { asyncHandler, successResponse, logAction } = require('../utils');
 const { HTTP_STATUS } = require('../constants');
 
 /**
@@ -32,7 +32,21 @@ const getById = asyncHandler(async (req, res) => {
  */
 const create = asyncHandler(async (req, res) => {
   const employee = await employeeService.create(req.body, req.user.id);
-  
+
+  logAction({
+    req,
+    action: 'CREATE_EMPLOYEE',
+    entityType: 'Employee',
+    entityId: employee.id,
+    metadata: {
+      name: employee.name,
+      cnic: employee.cnic,
+      department: employee.department,
+      designation: employee.designation,
+      createdBy: req.user.id
+    }
+  });
+
   res.status(HTTP_STATUS.CREATED).json(
     successResponse(employee, 'Employee created successfully')
   );
@@ -44,7 +58,17 @@ const create = asyncHandler(async (req, res) => {
  */
 const update = asyncHandler(async (req, res) => {
   const employee = await employeeService.update(req.params.id, req.body);
-  
+
+  logAction({
+    req,
+    action: 'UPDATE_EMPLOYEE',
+    entityType: 'Employee',
+    entityId: employee.id,
+    metadata: {
+      updates: req.body
+    }
+  });
+
   res.status(HTTP_STATUS.OK).json(
     successResponse(employee, 'Employee updated successfully')
   );
@@ -56,9 +80,36 @@ const update = asyncHandler(async (req, res) => {
  */
 const remove = asyncHandler(async (req, res) => {
   await employeeService.remove(req.params.id);
-  
+
+  logAction({
+    req,
+    action: 'DELETE_EMPLOYEE',
+    entityType: 'Employee',
+    entityId: req.params.id
+  });
+
   res.status(HTTP_STATUS.OK).json(
     successResponse(null, 'Employee deleted successfully')
+  );
+});
+
+/**
+ * Reset employee login password (Admin-only)
+ * PATCH /api/employees/:id/reset-password
+ */
+const resetPassword = asyncHandler(async (req, res) => {
+  const { newPassword } = req.body;
+  await employeeService.resetEmployeePassword(req.params.id, newPassword);
+
+  logAction({
+    req,
+    action: 'RESET_EMPLOYEE_PASSWORD',
+    entityType: 'Employee',
+    entityId: req.params.id
+  });
+
+  res.status(HTTP_STATUS.OK).json(
+    successResponse(null, 'Employee password reset successfully')
   );
 });
 
@@ -93,5 +144,6 @@ module.exports = {
   update,
   remove,
   getWithAdvances,
-  getSummary
+  getSummary,
+  resetPassword
 };

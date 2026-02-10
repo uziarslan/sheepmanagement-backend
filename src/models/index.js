@@ -15,6 +15,7 @@ const FeedApplication = require('./feedApplication.model');
 const VaccineRecipe = require('./vaccineRecipe.model');
 const VaccineApplication = require('./vaccineApplication.model');
 const Capital = require('./capital.model');
+const AuditLog = require('./auditLog.model');
 
 module.exports = {
   User,
@@ -34,6 +35,5 @@ module.exports = {
   VaccineRecipe,
   VaccineApplication,
   Capital,
-  FeedApplication,
-  Capital
+  AuditLog
 };

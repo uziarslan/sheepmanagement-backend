@@ -1,5 +1,5 @@
 const { authService } = require('../services');
-const { asyncHandler, successResponse } = require('../utils');
+const { asyncHandler, successResponse, logAction } = require('../utils');
 const { HTTP_STATUS } = require('../constants');
 
 /**
@@ -8,7 +8,19 @@ const { HTTP_STATUS } = require('../constants');
  */
 const register = asyncHandler(async (req, res) => {
   const result = await authService.register(req.body);
-  
+
+  logAction({
+    req,
+    userId: result.user?.id,
+    action: 'REGISTER',
+    entityType: 'User',
+    entityId: result.user?.id,
+    metadata: {
+      email: result.user?.email,
+      role: result.user?.role
+    }
+  });
+
   res.status(HTTP_STATUS.CREATED).json(
     successResponse(result, 'Registration successful')
   );
@@ -21,7 +33,18 @@ const register = asyncHandler(async (req, res) => {
 const login = asyncHandler(async (req, res) => {
   const { email, password } = req.body;
   const result = await authService.login(email, password);
-  
+
+  logAction({
+    req,
+    userId: result.user?.id,
+    action: 'LOGIN',
+    entityType: 'User',
+    entityId: result.user?.id,
+    metadata: {
+      email: result.user?.email
+    }
+  });
+
   res.status(HTTP_STATUS.OK).json(
     successResponse(result, 'Login successful')
   );
@@ -33,7 +56,15 @@ const login = asyncHandler(async (req, res) => {
  */
 const logout = asyncHandler(async (req, res) => {
   await authService.logout(req.user.id);
-  
+
+  logAction({
+    req,
+    userId: req.user.id,
+    action: 'LOGOUT',
+    entityType: 'User',
+    entityId: req.user.id
+  });
+
   res.status(HTTP_STATUS.OK).json(
     successResponse(null, 'Logout successful')
   );
@@ -71,7 +102,15 @@ const getMe = asyncHandler(async (req, res) => {
 const changePassword = asyncHandler(async (req, res) => {
   const { currentPassword, newPassword } = req.body;
   await authService.changePassword(req.user.id, currentPassword, newPassword);
-  
+
+  logAction({
+    req,
+    userId: req.user.id,
+    action: 'CHANGE_PASSWORD',
+    entityType: 'User',
+    entityId: req.user.id
+  });
+
   res.status(HTTP_STATUS.OK).json(
     successResponse(null, 'Password changed successfully')
   );
@@ -83,7 +122,16 @@ const changePassword = asyncHandler(async (req, res) => {
  */
 const updateProfile = asyncHandler(async (req, res) => {
   const user = await authService.updateProfile(req.user.id, req.body);
-  
+
+  logAction({
+    req,
+    userId: req.user.id,
+    action: 'UPDATE_PROFILE',
+    entityType: 'User',
+    entityId: req.user.id,
+    metadata: req.body
+  });
+
   res.status(HTTP_STATUS.OK).json(
     successResponse(user, 'Profile updated successfully')
   );

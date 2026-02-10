@@ -23,7 +23,9 @@ const createEmployee = {
       phone: Joi.string().trim().allow('', null),
       relation: Joi.string().trim().allow('', null)
     }).allow(null),
-    notes: Joi.string().max(1000).allow('', null)
+    notes: Joi.string().max(1000).allow('', null),
+    createCredentials: Joi.boolean().default(false),
+    loginPassword: Joi.string().min(6).max(128).allow('', null)
   })
 };
 
@@ -68,8 +70,20 @@ const getEmployees = {
   })
 };
 
+const resetEmployeePassword = {
+  params: Joi.object().keys({
+    id: Joi.string().hex().length(24).required()
+  }),
+  body: Joi.object().keys({
+    newPassword: Joi.string().required().min(6).max(128),
+    confirmPassword: Joi.string().required().valid(Joi.ref('newPassword'))
+      .messages({ 'any.only': 'Passwords do not match' })
+  })
+};
+
 module.exports = {
   createEmployee,
   updateEmployee,
-  getEmployees
+  getEmployees,
+  resetEmployeePassword
 };

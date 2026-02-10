@@ -1,11 +1,12 @@
 const express = require('express');
 const router = express.Router();
 const { capitalController } = require('../controllers');
-const { authenticate, validate } = require('../middleware');
+const { authenticate, authorize, validate } = require('../middleware');
 const { capitalValidation } = require('../validations');
 
-// All routes require authentication
+// All routes require authentication and admin role
 router.use(authenticate);
+router.use(authorize('Admin'));
 
 // GET /api/capital/summary - Get capital summary
 router.get('/summary', capitalController.getSummary);

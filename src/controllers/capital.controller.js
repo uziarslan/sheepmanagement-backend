@@ -1,5 +1,5 @@
 const { capitalService } = require('../services');
-const { asyncHandler, successResponse } = require('../utils');
+const { asyncHandler, successResponse, logAction } = require('../utils');
 const { HTTP_STATUS } = require('../constants');
 
 /**
@@ -21,7 +21,15 @@ const get = asyncHandler(async (req, res) => {
 const initialize = asyncHandler(async (req, res) => {
   const { amount } = req.body;
   const capital = await capitalService.initialize(req.user.id, amount);
-  
+
+  logAction({
+    req,
+    action: 'INITIALIZE_CAPITAL',
+    entityType: 'Capital',
+    entityId: capital.id,
+    metadata: { amount }
+  });
+
   res.status(HTTP_STATUS.CREATED).json(
     successResponse(capital, 'Capital initialized successfully')
   );
@@ -40,6 +48,19 @@ const addTransaction = asyncHandler(async (req, res) => {
     description,
     reference
   );
+
+  logAction({
+    req,
+    action: 'ADD_CAPITAL_TRANSACTION',
+    entityType: 'Capital',
+    entityId: capital.id,
+    metadata: {
+      amount,
+      type,
+      description,
+      reference
+    }
+  });
   
   res.status(HTTP_STATUS.OK).json(
     successResponse(capital, 'Transaction recorded successfully')

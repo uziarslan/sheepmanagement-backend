@@ -9,6 +9,7 @@ const feedValidation = require('./feed.validation');
 const vaccinationValidation = require('./vaccination.validation');
 const capitalValidation = require('./capital.validation');
 const salaryValidation = require('./salary.validation');
+const userValidation = require('./user.validation');
 
 module.exports = {
   authValidation,
@@ -21,5 +22,6 @@ module.exports = {
   feedValidation,
   vaccinationValidation,
   capitalValidation,
-  salaryValidation
+  salaryValidation,
+  userValidation
 };

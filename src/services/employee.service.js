@@ -1,5 +1,6 @@
-const { Employee } = require('../models');
+const { Employee, User } = require('../models');
 const { ApiError, getPaginationOptions, getSortOptions, getPaginationMeta } = require('../utils');
+const userService = require('./user.service');
 
 /**
  * Get all employees with filters
@@ -53,6 +54,7 @@ const getById = async (id) => {
 
 /**
  * Create employee
+ * Optionally creates login credentials when createCredentials is true.
  */
 const create = async (employeeData, userId) => {
   // Check for duplicate CNIC
@@ -61,10 +63,43 @@ const create = async (employeeData, userId) => {
     throw ApiError.conflict('Employee with this CNIC already exists');
   }
 
+  const {
+    createCredentials,
+    loginPassword,
+    ...employeeFields
+  } = employeeData;
+
+  if (createCredentials) {
+    if (!employeeFields.email) {
+      throw ApiError.badRequest('Email is required to create login credentials');
+    }
+
+    if (!loginPassword) {
+      throw ApiError.badRequest('Password is required to create login credentials');
+    }
+
+    // Ensure email is not already used by another user
+    const existingUser = await User.findOne({ email: employeeFields.email });
+    if (existingUser) {
+      throw ApiError.conflict('A user with this email already exists');
+    }
+  }
+
   const employee = await Employee.create({
-    ...employeeData,
+    ...employeeFields,
     createdBy: userId
   });
+
+  if (createCredentials) {
+    await userService.createUser({
+      name: employee.name,
+      email: employee.email,
+      password: loginPassword,
+      role: 'Employee',
+      phone: employee.phone,
+      employeeId: employee._id
+    });
+  }
 
   return employee;
 };
@@ -142,6 +177,27 @@ const getSummary = async () => {
   return summary;
 };
 
+/**
+ * Reset login password for an employee (Admin-only)
+ */
+const resetEmployeePassword = async (employeeId, newPassword) => {
+  const employee = await Employee.findById(employeeId);
+
+  if (!employee) {
+    throw ApiError.notFound('Employee not found');
+  }
+
+  const user = await User.findOne({ employee: employeeId });
+
+  if (!user) {
+    throw ApiError.notFound('No login credentials found for this employee');
+  }
+
+  await userService.resetPassword(user._id, newPassword);
+
+  return true;
+};
+
 module.exports = {
   getAll,
   getById,
@@ -149,5 +205,6 @@ module.exports = {
   update,
   remove,
   getWithOutstandingAdvances,
-  getSummary
+  getSummary,
+  resetEmployeePassword
 };
