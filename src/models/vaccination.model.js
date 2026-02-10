@@ -99,6 +99,45 @@ vaccinationSchema.pre('save', async function (next) {
     
     // Calculate total cost
     this.totalCost = this.medicines.reduce((sum, med) => sum + (med.total || 0), 0);
+
+    // Distribute vaccination cost to animals
+    if (this.totalCost > 0) {
+      const Animal = mongoose.model('Animal');
+
+      if ((this.scope === 'Individual' || this.scope === 'Individual Animal') && this.animal) {
+        // Individual animal - full cost to one animal
+        await Animal.findByIdAndUpdate(this.animal, {
+          $inc: { totalVaccinationCost: this.totalCost }
+        });
+      } else if ((this.scope === 'Pen' || this.scope === 'Shed') && this.pen) {
+        // Pen/Shed scope - divide among active animals in pen
+        const activeAnimals = await Animal.find({ pen: this.pen, status: 'Active' });
+        if (activeAnimals.length > 0) {
+          const costPerAnimal = this.totalCost / activeAnimals.length;
+          await Animal.updateMany(
+            { pen: this.pen, status: 'Active' },
+            { $inc: { totalVaccinationCost: costPerAnimal } }
+          );
+        }
+      } else if (this.scope === 'Multiple' && this.animals && this.animals.length > 0) {
+        // Multiple animals - divide among selected animals
+        const costPerAnimal = this.totalCost / this.animals.length;
+        await Animal.updateMany(
+          { _id: { $in: this.animals }, status: 'Active' },
+          { $inc: { totalVaccinationCost: costPerAnimal } }
+        );
+      } else if (this.scope === 'All Animals') {
+        // All animals scope - divide among all active animals
+        const activeAnimalCount = await Animal.countDocuments({ status: 'Active' });
+        if (activeAnimalCount > 0) {
+          const costPerAnimal = this.totalCost / activeAnimalCount;
+          await Animal.updateMany(
+            { status: 'Active' },
+            { $inc: { totalVaccinationCost: costPerAnimal } }
+          );
+        }
+      }
+    }
   }
   next();
 });

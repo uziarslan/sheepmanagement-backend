@@ -1,6 +1,7 @@
 const SalaryPayment = require('../models/salaryPayment.model');
 const Employee = require('../models/employee.model');
 const Capital = require('../models/capital.model');
+const Animal = require('../models/animal.model');
 
 const createSalaryPayment = async (data, userId) => {
   const { employee: employeeId, month, year, paymentDate, paymentMode, advanceDeduction = 0, otherDeductions = 0, notes } = data;
@@ -62,6 +63,21 @@ const createSalaryPayment = async (data, userId) => {
     // Do not fail the salary payment if capital logging fails; just log error
     // eslint-disable-next-line no-console
     console.error('Failed to record capital transaction for salary:', err.message || err);
+  }
+
+  // Distribute salary cost among all active animals
+  try {
+    const activeAnimalCount = await Animal.countDocuments({ status: 'Active' });
+    if (activeAnimalCount > 0) {
+      const costPerAnimal = netSalary / activeAnimalCount;
+      await Animal.updateMany(
+        { status: 'Active' },
+        { $inc: { totalSalaryCost: costPerAnimal } }
+      );
+    }
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error('Failed to distribute salary cost to animals:', err.message || err);
   }
 
   return salaryPayment;

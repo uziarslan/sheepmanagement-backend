@@ -53,6 +53,12 @@ router.put(
   animalController.moveToPen
 );
 
+// PUT /api/animals/:id/declare-dead - Declare animal as dead
+router.put(
+  '/:id/declare-dead',
+  animalController.declareDead
+);
+
 // DELETE /api/animals/:id - Delete animal
 router.delete(
   '/:id',

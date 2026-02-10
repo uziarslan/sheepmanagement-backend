@@ -102,6 +102,28 @@ dewormingSchema.pre('save', async function (next) {
     
     // Calculate total cost
     this.totalCost = this.medicines.reduce((sum, med) => sum + (med.total || 0), 0);
+
+    // Distribute deworming cost to animals
+    if (this.totalCost > 0) {
+      const Animal = mongoose.model('Animal');
+
+      if (this.scope === 'Individual Animal' && this.animal) {
+        // Individual animal - full cost to one animal
+        await Animal.findByIdAndUpdate(this.animal, {
+          $inc: { totalDewormingCost: this.totalCost }
+        });
+      } else if (this.scope === 'Shed' && this.pen) {
+        // Shed scope - divide among active animals in pen
+        const activeAnimals = await Animal.find({ pen: this.pen, status: 'Active' });
+        if (activeAnimals.length > 0) {
+          const costPerAnimal = this.totalCost / activeAnimals.length;
+          await Animal.updateMany(
+            { pen: this.pen, status: 'Active' },
+            { $inc: { totalDewormingCost: costPerAnimal } }
+          );
+        }
+      }
+    }
   }
   next();
 });

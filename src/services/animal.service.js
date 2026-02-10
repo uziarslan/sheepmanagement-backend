@@ -32,13 +32,15 @@ const getAll = async (query) => {
       .populate('pen', 'name type')
       .sort(sort)
       .skip(skip)
-      .limit(limit)
-      .lean(),
+      .limit(limit),
     Animal.countDocuments(filter)
   ]);
 
+  // Convert to JSON to include virtuals
+  const animalsWithVirtuals = animals.map(animal => animal.toJSON());
+
   return {
-    data: animals,
+    data: animalsWithVirtuals,
     meta: getPaginationMeta(total, page, limit)
   };
 };
@@ -215,6 +217,58 @@ const getByPen = async (penId) => {
   return animals;
 };
 
+/**
+ * Declare animal as dead and distribute its cost among remaining active animals
+ */
+const declareDead = async (id, deathData) => {
+  const animal = await Animal.findById(id);
+
+  if (!animal) {
+    throw ApiError.notFound('Animal not found');
+  }
+
+  if (animal.status === 'Dead') {
+    throw ApiError.badRequest('Animal is already marked as dead');
+  }
+
+  // Calculate the animal's total cost (purchase price + all operational costs)
+  const animalTotalCost = animal.purchasePrice + 
+    (animal.totalFeedCost || 0) + 
+    (animal.totalHealthCost || 0) + 
+    (animal.totalVaccinationCost || 0) + 
+    (animal.totalDewormingCost || 0) + 
+    (animal.totalSalaryCost || 0);
+
+  // Mark animal as dead
+  animal.status = 'Dead';
+  animal.deathDate = deathData.deathDate || new Date();
+  animal.deathReason = deathData.deathReason || '';
+  await animal.save();
+
+  // Get count of remaining active animals
+  const activeAnimalCount = await Animal.countDocuments({ status: 'Active' });
+
+  let costDistributed = 0;
+  if (activeAnimalCount > 0 && animalTotalCost > 0) {
+    // Distribute the dead animal's total cost among all remaining active animals
+    const costPerAnimal = animalTotalCost / activeAnimalCount;
+    
+    await Animal.updateMany(
+      { status: 'Active' },
+      { $inc: { totalHealthCost: costPerAnimal } }
+    );
+    
+    costDistributed = animalTotalCost;
+  }
+
+  return {
+    animal,
+    costDistributed,
+    activeAnimalsCount: activeAnimalCount,
+    costPerAnimal: activeAnimalCount > 0 ? animalTotalCost / activeAnimalCount : 0
+  };
+};
+
 module.exports = {
   getAll,
   getById,
@@ -223,5 +277,6 @@ module.exports = {
   update,
   remove,
   moveToPen,
-  getByPen
+  getByPen,
+  declareDead
 };

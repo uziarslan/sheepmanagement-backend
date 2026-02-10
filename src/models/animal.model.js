@@ -128,6 +128,21 @@ const animalSchema = new mongoose.Schema(
       default: 0,
       min: 0
     },
+    totalVaccinationCost: {
+      type: Number,
+      default: 0,
+      min: 0
+    },
+    totalDewormingCost: {
+      type: Number,
+      default: 0,
+      min: 0
+    },
+    totalSalaryCost: {
+      type: Number,
+      default: 0,
+      min: 0
+    },
     // Created by user
     createdBy: {
       type: mongoose.Schema.Types.ObjectId,
@@ -163,15 +178,26 @@ animalSchema.virtual('pricePerKg').get(function () {
   return Math.round(this.purchasePrice / this.weight);
 });
 
-// Virtual for total cost
-animalSchema.virtual('totalCost').get(function () {
-  return this.purchasePrice + this.totalFeedCost + this.totalHealthCost;
+// Virtual for operational cost (all costs spent on the animal, excluding purchase price)
+animalSchema.virtual('cost').get(function () {
+  return (this.totalFeedCost || 0) + (this.totalHealthCost || 0) + (this.totalVaccinationCost || 0) + (this.totalDewormingCost || 0) + (this.totalSalaryCost || 0);
+});
+
+// Virtual for total price (purchase price + operational cost)
+animalSchema.virtual('totalPrice').get(function () {
+  return this.purchasePrice + this.cost;
+});
+
+// Virtual for total price per kg
+animalSchema.virtual('totalPricePerKg').get(function () {
+  if (!this.weight || this.weight === 0) return 0;
+  return Math.round(this.totalPrice / this.weight);
 });
 
 // Virtual for profit/loss (if sold)
 animalSchema.virtual('profitLoss').get(function () {
   if (!this.soldPrice) return null;
-  return this.soldPrice - this.totalCost;
+  return this.soldPrice - this.totalPrice;
 });
 
 // Static method to get active animals count by pen

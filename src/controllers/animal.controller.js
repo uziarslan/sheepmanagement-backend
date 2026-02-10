@@ -98,6 +98,18 @@ const getByPen = asyncHandler(async (req, res) => {
   );
 });
 
+/**
+ * Declare animal as dead
+ * PUT /api/animals/:id/declare-dead
+ */
+const declareDead = asyncHandler(async (req, res) => {
+  const result = await animalService.declareDead(req.params.id, req.body);
+  
+  res.status(HTTP_STATUS.OK).json(
+    successResponse(result, 'Animal marked as dead and costs distributed successfully')
+  );
+});
+
 module.exports = {
   getAll,
   getById,
@@ -106,5 +118,6 @@ module.exports = {
   update,
   remove,
   moveToPen,
-  getByPen
+  getByPen,
+  declareDead
 };

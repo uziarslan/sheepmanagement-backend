@@ -291,6 +291,16 @@ const applyVaccine = async (data, userId) => {
   vaccineRecipe.appliedCount += 1;
   await vaccineRecipe.save();
 
+  // Distribute vaccination cost to animals
+  if (totalCost > 0 && animalCount > 0) {
+    const costPerAnimal = totalCost / animalCount;
+    const animalIds = targetAnimals.map(a => a._id);
+    await Animal.updateMany(
+      { _id: { $in: animalIds }, status: 'Active' },
+      { $inc: { totalVaccinationCost: costPerAnimal } }
+    );
+  }
+
   return application.populate([
     { path: 'vaccineRecipe', select: 'name disease' },
     { path: 'pen', select: 'name' },
