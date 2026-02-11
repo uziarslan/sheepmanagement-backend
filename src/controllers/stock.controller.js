@@ -43,7 +43,7 @@ const create = asyncHandler(async (req, res) => {
  * PUT /api/stocks/:id
  */
 const update = asyncHandler(async (req, res) => {
-  const stock = await stockService.update(req.params.id, req.body);
+  const stock = await stockService.update(req.params.id, req.body, req.user.id);
   
   res.status(HTTP_STATUS.OK).json(
     successResponse(stock, 'Stock updated successfully')
@@ -55,7 +55,7 @@ const update = asyncHandler(async (req, res) => {
  * DELETE /api/stocks/:id
  */
 const remove = asyncHandler(async (req, res) => {
-  await stockService.remove(req.params.id);
+  await stockService.remove(req.params.id, req.user.id);
   
   res.status(HTTP_STATUS.OK).json(
     successResponse(null, 'Stock item deleted successfully')
@@ -68,7 +68,7 @@ const remove = asyncHandler(async (req, res) => {
  */
 const adjustStock = asyncHandler(async (req, res) => {
   const { quantity, type, reason } = req.body;
-  const stock = await stockService.adjustStock(req.params.id, quantity, type, reason);
+  const stock = await stockService.adjustStock(req.params.id, quantity, type, reason, req.user.id);
   
   res.status(HTTP_STATUS.OK).json(
     successResponse(stock, 'Stock adjusted successfully')

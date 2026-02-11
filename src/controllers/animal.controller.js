@@ -55,7 +55,7 @@ const bulkCreate = asyncHandler(async (req, res) => {
  * PUT /api/animals/:id
  */
 const update = asyncHandler(async (req, res) => {
-  const animal = await animalService.update(req.params.id, req.body);
+  const animal = await animalService.update(req.params.id, req.body, req.user.id);
   
   res.status(HTTP_STATUS.OK).json(
     successResponse(animal, 'Animal updated successfully')
@@ -67,7 +67,7 @@ const update = asyncHandler(async (req, res) => {
  * DELETE /api/animals/:id
  */
 const remove = asyncHandler(async (req, res) => {
-  await animalService.remove(req.params.id);
+  await animalService.remove(req.params.id, req.user.id);
   
   res.status(HTTP_STATUS.OK).json(
     successResponse(null, 'Animal deleted successfully')
@@ -79,7 +79,7 @@ const remove = asyncHandler(async (req, res) => {
  * PUT /api/animals/:id/move-to-pen
  */
 const moveToPen = asyncHandler(async (req, res) => {
-  const animal = await animalService.moveToPen(req.params.id, req.body.penId);
+  const animal = await animalService.moveToPen(req.params.id, req.body.penId, req.user.id);
   
   res.status(HTTP_STATUS.OK).json(
     successResponse(animal, 'Animal moved successfully')

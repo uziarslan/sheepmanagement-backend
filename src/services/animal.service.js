@@ -1,5 +1,5 @@
 const { Animal, Pen, Capital } = require('../models');
-const { ApiError, getPaginationOptions, getSortOptions, getPaginationMeta } = require('../utils');
+const { ApiError, getPaginationOptions, getSortOptions, getPaginationMeta, logAction } = require('../utils');
 
 /**
  * Get all animals with filters and pagination
@@ -86,6 +86,37 @@ const create = async (animalData, userId) => {
     createdBy: userId
   });
 
+  // Deduct from capital
+  try {
+    const capital = await Capital.findOne({ user: userId });
+    if (capital && animalData.purchasePrice) {
+      await capital.addTransaction(
+        -animalData.purchasePrice, // Negative because it's an investment/expense
+        'Animal Purchase',
+        `Animal ${animal.tagId} purchased`,
+        animal._id,
+        userId
+      );
+    }
+  } catch (error) {
+    // Log error but don't fail the request
+    console.error('Failed to update capital for animal purchase:', error);
+  }
+
+  // Create audit log
+  logAction({
+    userId,
+    action: 'Animal Created',
+    entityType: 'Animal',
+    entityId: animal._id,
+    metadata: {
+      tagId: animal.tagId,
+      name: animal.name,
+      purchasePrice: animalData.purchasePrice,
+      animalType: animal.animalType
+    }
+  });
+
   return animal.populate('pen', 'name type');
 };
 
@@ -97,6 +128,8 @@ const bulkCreate = async (animalsData, userId) => {
     success: [],
     failed: []
   };
+
+  let totalInvestment = 0;
 
   for (const animalData of animalsData) {
     try {
@@ -118,11 +151,46 @@ const bulkCreate = async (animalsData, userId) => {
       });
 
       results.success.push(animal);
+      totalInvestment += animalData.purchasePrice || 0;
+
+      // Create audit log for each animal
+      logAction({
+        userId,
+        action: 'Animal Bulk Created',
+        entityType: 'Animal',
+        entityId: animal._id,
+        metadata: {
+          tagId: animal.tagId,
+          name: animal.name,
+          purchasePrice: animalData.purchasePrice,
+          animalType: animal.animalType,
+          bulkImport: true
+        }
+      });
     } catch (error) {
       results.failed.push({
         data: animalData,
         error: error.message
       });
+    }
+  }
+
+  // Deduct total from capital after all successful creations
+  if (results.success.length > 0 && totalInvestment > 0) {
+    try {
+      const capital = await Capital.findOne({ user: userId });
+      if (capital) {
+        await capital.addTransaction(
+          -totalInvestment, // Negative because it's an investment/expense
+          'Animal Purchase',
+          `Bulk import: ${results.success.length} animals purchased for total amount ${totalInvestment}`,
+          null,
+          userId
+        );
+      }
+    } catch (error) {
+      // Log error but don't fail the request
+      console.error('Failed to update capital for bulk animal purchase:', error);
     }
   }
 
@@ -132,7 +200,7 @@ const bulkCreate = async (animalsData, userId) => {
 /**
  * Update animal
  */
-const update = async (id, updateData) => {
+const update = async (id, updateData, userId) => {
   // Check for duplicate tagId if being changed
   if (updateData.tagId) {
     const existing = await Animal.findOne({ 
@@ -162,18 +230,44 @@ const update = async (id, updateData) => {
     throw ApiError.notFound('Animal not found');
   }
 
+  // Create audit log
+  logAction({
+    userId,
+    action: 'Animal Updated',
+    entityType: 'Animal',
+    entityId: animal._id,
+    metadata: {
+      tagId: animal.tagId,
+      name: animal.name,
+      changes: updateData
+    }
+  });
+
   return animal;
 };
 
 /**
  * Delete animal
  */
-const remove = async (id) => {
+const remove = async (id, userId) => {
   const animal = await Animal.findByIdAndDelete(id);
 
   if (!animal) {
     throw ApiError.notFound('Animal not found');
   }
+
+  // Create audit log
+  logAction({
+    userId,
+    action: 'Animal Deleted',
+    entityType: 'Animal',
+    entityId: animal._id,
+    metadata: {
+      tagId: animal.tagId,
+      name: animal.name,
+      purchasePrice: animal.purchasePrice
+    }
+  });
 
   return animal;
 };
@@ -181,7 +275,7 @@ const remove = async (id) => {
 /**
  * Move animal to pen
  */
-const moveToPen = async (animalId, penId) => {
+const moveToPen = async (animalId, penId, userId) => {
   const [animal, pen] = await Promise.all([
     Animal.findById(animalId),
     Pen.findById(penId)
@@ -201,8 +295,24 @@ const moveToPen = async (animalId, penId) => {
     throw ApiError.badRequest('Pen is at full capacity');
   }
 
+  const oldPenId = animal.pen;
   animal.pen = penId;
   await animal.save();
+
+  // Create audit log
+  logAction({
+    userId,
+    action: 'Animal Moved to Pen',
+    entityType: 'Animal',
+    entityId: animal._id,
+    metadata: {
+      tagId: animal.tagId,
+      name: animal.name,
+      fromPen: oldPenId,
+      toPen: penId,
+      penName: pen.name
+    }
+  });
 
   return animal.populate('pen', 'name type capacity');
 };
@@ -260,6 +370,21 @@ const declareDead = async (id, deathData, userId) => {
     }
   }
 
+  // Create audit log
+  logAction({
+    userId,
+    action: 'Animal Declared Dead',
+    entityType: 'Animal',
+    entityId: animal._id,
+    metadata: {
+      tagId: animal.tagId,
+      name: animal.name,
+      deathDate: animal.deathDate,
+      deathReason: animal.deathReason,
+      lossRecorded: animalTotalCost
+    }
+  });
+
   return {
     animal,
     lossRecorded: animalTotalCost
@@ -310,6 +435,22 @@ const markAsSold = async (id, saleData, userId) => {
       console.error('Failed to record capital for animal sale:', err.message || err);
     }
   }
+
+  // Create audit log
+  logAction({
+    userId,
+    action: 'Animal Marked as Sold',
+    entityType: 'Animal',
+    entityId: animal._id,
+    metadata: {
+      tagId: animal.tagId,
+      name: animal.name,
+      soldDate: animal.soldDate,
+      soldPrice: sellingPrice,
+      totalCost: totalCost,
+      profit: profitFromSale
+    }
+  });
 
   return {
     animal,
@@ -382,6 +523,23 @@ const bulkMarkAsSold = async (animalsData, userId) => {
           console.error('Failed to record capital for animal sale:', err.message || err);
         }
       }
+
+      // Create audit log for each sale
+      logAction({
+        userId,
+        action: 'Animal Bulk Marked as Sold',
+        entityType: 'Animal',
+        entityId: animal._id,
+        metadata: {
+          tagId: animal.tagId,
+          name: animal.name,
+          soldDate: animal.soldDate,
+          soldPrice: sellingPrice,
+          totalCost: totalCost,
+          profit: profitFromSale,
+          bulkOperation: true
+        }
+      });
 
       results.success.push({
         animalId: animal._id,

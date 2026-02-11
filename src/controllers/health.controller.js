@@ -21,7 +21,7 @@ const createVaccination = asyncHandler(async (req, res) => {
 });
 
 const deleteVaccination = asyncHandler(async (req, res) => {
-  await healthService.deleteVaccination(req.params.id);
+  await healthService.deleteVaccination(req.params.id, req.user.id);
   
   res.status(HTTP_STATUS.OK).json(
     successResponse(null, 'Vaccination record deleted successfully')
@@ -47,7 +47,7 @@ const createTreatment = asyncHandler(async (req, res) => {
 });
 
 const updateTreatment = asyncHandler(async (req, res) => {
-  const treatment = await healthService.updateTreatment(req.params.id, req.body);
+  const treatment = await healthService.updateTreatment(req.params.id, req.body, req.user.id);
   
   res.status(HTTP_STATUS.OK).json(
     successResponse(treatment, 'Treatment updated successfully')
@@ -55,7 +55,7 @@ const updateTreatment = asyncHandler(async (req, res) => {
 });
 
 const deleteTreatment = asyncHandler(async (req, res) => {
-  await healthService.deleteTreatment(req.params.id);
+  await healthService.deleteTreatment(req.params.id, req.user.id);
   
   res.status(HTTP_STATUS.OK).json(
     successResponse(null, 'Treatment record deleted successfully')
@@ -81,7 +81,7 @@ const createDeworming = asyncHandler(async (req, res) => {
 });
 
 const deleteDeworming = asyncHandler(async (req, res) => {
-  await healthService.deleteDeworming(req.params.id);
+  await healthService.deleteDeworming(req.params.id, req.user.id);
   
   res.status(HTTP_STATUS.OK).json(
     successResponse(null, 'Deworming record deleted successfully')
@@ -143,7 +143,7 @@ const createHoofRecord = asyncHandler(async (req, res) => {
 });
 
 const updateHoofRecord = asyncHandler(async (req, res) => {
-  const record = await healthService.updateHoofRecord(req.params.id, req.body);
+  const record = await healthService.updateHoofRecord(req.params.id, req.body, req.user.id);
   
   res.status(HTTP_STATUS.OK).json(
     successResponse(record, 'Hoof record updated successfully')
@@ -151,7 +151,7 @@ const updateHoofRecord = asyncHandler(async (req, res) => {
 });
 
 const deleteHoofRecord = asyncHandler(async (req, res) => {
-  await healthService.deleteHoofRecord(req.params.id);
+  await healthService.deleteHoofRecord(req.params.id, req.user.id);
   
   res.status(HTTP_STATUS.OK).json(
     successResponse(null, 'Hoof record deleted successfully')

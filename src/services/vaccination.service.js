@@ -1,5 +1,5 @@
 const { Stock, VaccineRecipe, VaccineApplication, Animal, Pen } = require('../models');
-const { ApiError, getPaginationOptions, getSortOptions, getPaginationMeta } = require('../utils');
+const { ApiError, getPaginationOptions, getSortOptions, getPaginationMeta, logAction } = require('../utils');
 
 // ============ VACCINE RECIPE SERVICES ============
 
@@ -77,6 +77,20 @@ const createVaccine = async (data, userId) => {
     createdBy: userId
   });
 
+  // Create audit log
+  logAction({
+    userId,
+    action: 'Vaccine Recipe Created',
+    entityType: 'VaccineRecipe',
+    entityId: vaccine._id,
+    metadata: {
+      name: vaccine.name,
+      disease: vaccine.disease,
+      medicineCount: data.medicines.length,
+      totalCost: totalCost
+    }
+  });
+
   return vaccine;
 };
 
@@ -116,10 +130,23 @@ const updateVaccine = async (id, data, userId) => {
   Object.assign(vaccine, data);
   await vaccine.save();
 
+  // Create audit log
+  logAction({
+    userId,
+    action: 'Vaccine Recipe Updated',
+    entityType: 'VaccineRecipe',
+    entityId: vaccine._id,
+    metadata: {
+      name: vaccine.name,
+      disease: vaccine.disease,
+      changes: data
+    }
+  });
+
   return vaccine;
 };
 
-const deleteVaccine = async (id) => {
+const deleteVaccine = async (id, userId) => {
   const vaccine = await VaccineRecipe.findById(id);
   if (!vaccine) throw ApiError.notFound('Vaccine recipe not found');
 
@@ -133,6 +160,19 @@ const deleteVaccine = async (id) => {
   }
 
   await VaccineRecipe.findByIdAndDelete(id);
+
+  // Create audit log
+  logAction({
+    userId,
+    action: 'Vaccine Recipe Deleted',
+    entityType: 'VaccineRecipe',
+    entityId: vaccine._id,
+    metadata: {
+      name: vaccine.name,
+      disease: vaccine.disease,
+      totalCost: vaccine.totalCost
+    }
+  });
 };
 
 // ============ APPLICATION SERVICES ============
@@ -301,6 +341,23 @@ const applyVaccine = async (data, userId) => {
     );
   }
 
+  // Create audit log
+  logAction({
+    userId,
+    action: 'Vaccine Applied',
+    entityType: 'VaccineApplication',
+    entityId: application._id,
+    metadata: {
+      vaccineName: vaccineRecipe.name,
+      disease: vaccineRecipe.disease,
+      scope: scope,
+      animalCount: animalCount,
+      penName: penName || 'N/A',
+      totalCost: totalCost,
+      medicineCount: processedMedicines.length
+    }
+  });
+
   return application.populate([
     { path: 'vaccineRecipe', select: 'name disease' },
     { path: 'pen', select: 'name' },
@@ -324,7 +381,7 @@ const getApplicationById = async (id) => {
   return application;
 };
 
-const deleteApplication = async (id) => {
+const deleteApplication = async (id, userId) => {
   const application = await VaccineApplication.findById(id);
   if (!application) throw ApiError.notFound('Vaccination application not found');
 
@@ -345,6 +402,21 @@ const deleteApplication = async (id) => {
   }
 
   await VaccineApplication.findByIdAndDelete(id);
+
+  // Create audit log
+  logAction({
+    userId,
+    action: 'Vaccine Application Deleted',
+    entityType: 'VaccineApplication',
+    entityId: application._id,
+    metadata: {
+      vaccineName: application.vaccineName,
+      disease: application.disease,
+      scope: application.scope,
+      animalCount: application.animalCount,
+      totalCost: application.totalCost
+    }
+  });
 };
 
 module.exports = {

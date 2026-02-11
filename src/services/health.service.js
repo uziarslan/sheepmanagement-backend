@@ -8,7 +8,7 @@ const {
   Animal,
   Stock
 } = require('../models');
-const { ApiError, getPaginationOptions, getSortOptions, getPaginationMeta } = require('../utils');
+const { ApiError, getPaginationOptions, getSortOptions, getPaginationMeta, logAction } = require('../utils');
 
 // ============ VACCINATION SERVICES ============
 
@@ -62,12 +62,41 @@ const createVaccination = async (data, userId) => {
     createdBy: userId
   });
 
+  // Create audit log
+  logAction({
+    userId,
+    action: 'Vaccination Record Created',
+    entityType: 'Vaccination',
+    entityId: vaccination._id,
+    metadata: {
+      scope: data.scope,
+      disease: data.disease,
+      vaccineUsed: data.vaccineUsed,
+      animalCount: data.animalCount,
+      date: data.date
+    }
+  });
+
   return vaccination.populate(['pen', 'animal', 'technician']);
 };
 
-const deleteVaccination = async (id) => {
+const deleteVaccination = async (id, userId) => {
   const vaccination = await Vaccination.findByIdAndDelete(id);
   if (!vaccination) throw ApiError.notFound('Vaccination record not found');
+  
+  // Create audit log
+  logAction({
+    userId,
+    action: 'Vaccination Record Deleted',
+    entityType: 'Vaccination',
+    entityId: vaccination._id,
+    metadata: {
+      disease: vaccination.disease,
+      vaccineUsed: vaccination.vaccineUsed,
+      animalCount: vaccination.animalCount
+    }
+  });
+  
   return vaccination;
 };
 
@@ -119,10 +148,25 @@ const createTreatment = async (data, userId) => {
     createdBy: userId
   });
 
+  // Create audit log
+  logAction({
+    userId,
+    action: 'Treatment Record Created',
+    entityType: 'Treatment',
+    entityId: treatment._id,
+    metadata: {
+      animalTagId: animal.tagId,
+      animalName: animal.name,
+      diagnosis: data.diagnosis,
+      treatmentType: data.treatmentType,
+      date: data.date
+    }
+  });
+
   return treatment.populate(['animal', 'veterinarian']);
 };
 
-const updateTreatment = async (id, data) => {
+const updateTreatment = async (id, data, userId) => {
   const treatment = await Treatment.findByIdAndUpdate(
     id,
     { $set: data },
@@ -130,12 +174,41 @@ const updateTreatment = async (id, data) => {
   ).populate(['animal', 'veterinarian']);
 
   if (!treatment) throw ApiError.notFound('Treatment not found');
+  
+  // Create audit log
+  logAction({
+    userId,
+    action: 'Treatment Record Updated',
+    entityType: 'Treatment',
+    entityId: treatment._id,
+    metadata: {
+      animalTagId: treatment.animalTagId,
+      diagnosis: treatment.diagnosis,
+      cureStatus: treatment.cureStatus,
+      changes: data
+    }
+  });
+  
   return treatment;
 };
 
-const deleteTreatment = async (id) => {
+const deleteTreatment = async (id, userId) => {
   const treatment = await Treatment.findByIdAndDelete(id);
   if (!treatment) throw ApiError.notFound('Treatment record not found');
+  
+  // Create audit log
+  logAction({
+    userId,
+    action: 'Treatment Record Deleted',
+    entityType: 'Treatment',
+    entityId: treatment._id,
+    metadata: {
+      animalTagId: treatment.animalTagId,
+      diagnosis: treatment.diagnosis,
+      cureStatus: treatment.cureStatus
+    }
+  });
+  
   return treatment;
 };
 
@@ -188,12 +261,40 @@ const createDeworming = async (data, userId) => {
     createdBy: userId
   });
 
+  // Create audit log
+  logAction({
+    userId,
+    action: 'Deworming Record Created',
+    entityType: 'Deworming',
+    entityId: deworming._id,
+    metadata: {
+      scope: data.scope,
+      dewormingType: data.dewormingType,
+      animalCount: data.animalCount,
+      date: data.date
+    }
+  });
+
   return deworming.populate(['pen', 'animal', 'technician']);
 };
 
-const deleteDeworming = async (id) => {
+const deleteDeworming = async (id, userId) => {
   const deworming = await Deworming.findByIdAndDelete(id);
   if (!deworming) throw ApiError.notFound('Deworming record not found');
+  
+  // Create audit log
+  logAction({
+    userId,
+    action: 'Deworming Record Deleted',
+    entityType: 'Deworming',
+    entityId: deworming._id,
+    metadata: {
+      scope: deworming.scope,
+      dewormingType: deworming.dewormingType,
+      animalCount: deworming.animalCount
+    }
+  });
+  
   return deworming;
 };
 
@@ -239,6 +340,20 @@ const createWeightRecord = async (data, userId) => {
     ...data,
     recordedBy: userId,
     createdBy: userId
+  });
+
+  // Create audit log
+  logAction({
+    userId,
+    action: 'Weight Record Created',
+    entityType: 'WeightRecord',
+    entityId: record._id,
+    metadata: {
+      animalTagId: animal.tagId,
+      animalName: animal.name,
+      weight: data.weight,
+      date: data.date
+    }
   });
 
   return record.populate('animal');
@@ -288,6 +403,20 @@ const createBcsRecord = async (data, userId) => {
     createdBy: userId
   });
 
+  // Create audit log
+  logAction({
+    userId,
+    action: 'BCS Record Created',
+    entityType: 'BCSRecord',
+    entityId: record._id,
+    metadata: {
+      animalTagId: animal.tagId,
+      animalName: animal.name,
+      bcsScore: data.bcsScore,
+      date: data.date
+    }
+  });
+
   return record.populate('animal');
 };
 
@@ -335,10 +464,24 @@ const createHoofRecord = async (data, userId) => {
     createdBy: userId
   });
 
+  // Create audit log
+  logAction({
+    userId,
+    action: 'Hoof Record Created',
+    entityType: 'HoofRecord',
+    entityId: record._id,
+    metadata: {
+      animalTagId: animal.tagId,
+      animalName: animal.name,
+      diagnosis: data.diagnosis,
+      date: data.date
+    }
+  });
+
   return record.populate(['animal', 'technician']);
 };
 
-const updateHoofRecord = async (id, data) => {
+const updateHoofRecord = async (id, data, userId) => {
   const record = await HoofRecord.findByIdAndUpdate(
     id,
     { $set: data },
@@ -346,12 +489,39 @@ const updateHoofRecord = async (id, data) => {
   ).populate(['animal', 'technician']);
 
   if (!record) throw ApiError.notFound('Hoof record not found');
+  
+  // Create audit log
+  logAction({
+    userId,
+    action: 'Hoof Record Updated',
+    entityType: 'HoofRecord',
+    entityId: record._id,
+    metadata: {
+      animalTagId: record.animalTagId,
+      diagnosis: record.diagnosis,
+      changes: data
+    }
+  });
+  
   return record;
 };
 
-const deleteHoofRecord = async (id) => {
+const deleteHoofRecord = async (id, userId) => {
   const record = await HoofRecord.findByIdAndDelete(id);
   if (!record) throw ApiError.notFound('Hoof record not found');
+  
+  // Create audit log
+  logAction({
+    userId,
+    action: 'Hoof Record Deleted',
+    entityType: 'HoofRecord',
+    entityId: record._id,
+    metadata: {
+      animalTagId: record.animalTagId,
+      diagnosis: record.diagnosis
+    }
+  });
+  
   return record;
 };
 

@@ -57,7 +57,7 @@ const updateRecipe = asyncHandler(async (req, res) => {
  * DELETE /api/feed/recipes/:id
  */
 const deleteRecipe = asyncHandler(async (req, res) => {
-  await feedService.deleteRecipe(req.params.id);
+  await feedService.deleteRecipe(req.params.id, req.user.id);
   
   res.status(HTTP_STATUS.OK).json(
     successResponse(null, 'Recipe deleted successfully')

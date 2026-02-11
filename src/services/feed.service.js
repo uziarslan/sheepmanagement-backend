@@ -1,5 +1,5 @@
 const { FeedRecipe, FeedApplication, Stock, Animal, Pen } = require('../models');
-const { ApiError, getPaginationOptions, getSortOptions, getPaginationMeta } = require('../utils');
+const { ApiError, getPaginationOptions, getSortOptions, getPaginationMeta, logAction } = require('../utils');
 
 // ============ RECIPE SERVICES ============
 
@@ -90,6 +90,20 @@ const createRecipe = async (data, userId) => {
     createdBy: userId
   });
 
+  // Create audit log
+  logAction({
+    userId,
+    action: 'Feed Recipe Created',
+    entityType: 'FeedRecipe',
+    entityId: recipe._id,
+    metadata: {
+      name: recipe.name,
+      penName: pen.name,
+      ingredientCount: data.ingredients.length,
+      totalCost: totalCost
+    }
+  });
+
   return recipe.populate('pen');
 };
 
@@ -133,12 +147,39 @@ const updateRecipe = async (id, data, userId) => {
     { new: true, runValidators: true }
   ).populate('pen');
 
+  // Create audit log
+  logAction({
+    userId,
+    action: 'Feed Recipe Updated',
+    entityType: 'FeedRecipe',
+    entityId: recipe._id,
+    metadata: {
+      name: updated.name,
+      penName: updated.penName,
+      changes: data
+    }
+  });
+
   return updated;
 };
 
-const deleteRecipe = async (id) => {
+const deleteRecipe = async (id, userId) => {
   const recipe = await FeedRecipe.findByIdAndDelete(id);
   if (!recipe) throw ApiError.notFound('Recipe not found');
+  
+  // Create audit log
+  logAction({
+    userId,
+    action: 'Feed Recipe Deleted',
+    entityType: 'FeedRecipe',
+    entityId: recipe._id,
+    metadata: {
+      name: recipe.name,
+      penName: recipe.penName,
+      totalCost: recipe.totalCost
+    }
+  });
+  
   return recipe;
 };
 
@@ -228,6 +269,22 @@ const applyRecipe = async (data, userId) => {
   };
 
   const application = await FeedApplication.create(applicationData);
+
+  // Create audit log
+  logAction({
+    userId,
+    action: 'Feed Recipe Applied',
+    entityType: 'FeedApplication',
+    entityId: application._id,
+    metadata: {
+      recipeName: recipe.name,
+      penName: pen.name,
+      animalCount: animalCount,
+      ingredientCount: recipe.ingredients.length,
+      totalCost: recipe.totalCost,
+      costPerAnimal: animalCount > 0 ? recipe.totalCost / animalCount : 0
+    }
+  });
 
   return application.populate(['recipe', 'pen', 'appliedBy']);
 };

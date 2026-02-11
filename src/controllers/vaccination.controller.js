@@ -57,7 +57,7 @@ const updateVaccine = asyncHandler(async (req, res) => {
  * DELETE /api/vaccination/vaccines/:id
  */
 const deleteVaccine = asyncHandler(async (req, res) => {
-  await vaccinationService.deleteVaccine(req.params.id);
+  await vaccinationService.deleteVaccine(req.params.id, req.user.id);
   
   res.status(HTTP_STATUS.OK).json(
     successResponse(null, 'Vaccine deleted successfully')
@@ -107,7 +107,7 @@ const getApplicationById = asyncHandler(async (req, res) => {
  * DELETE /api/vaccination/applications/:id
  */
 const deleteApplication = asyncHandler(async (req, res) => {
-  await vaccinationService.deleteApplication(req.params.id);
+  await vaccinationService.deleteApplication(req.params.id, req.user.id);
   
   res.status(HTTP_STATUS.OK).json(
     successResponse(null, 'Vaccination application deleted successfully')

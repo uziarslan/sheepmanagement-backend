@@ -1,5 +1,5 @@
-const { Stock } = require('../models');
-const { ApiError, getPaginationOptions, getSortOptions, getPaginationMeta } = require('../utils');
+const { Stock, Capital } = require('../models');
+const { ApiError, getPaginationOptions, getSortOptions, getPaginationMeta, logAction } = require('../utils');
 
 /**
  * Get all stocks with filters
@@ -71,13 +71,45 @@ const create = async (stockData, userId) => {
     createdBy: userId
   });
 
+  // Deduct from capital
+  try {
+    const capital = await Capital.findOne({ user: userId });
+    if (capital && stockData.totalPrice) {
+      await capital.addTransaction(
+        -stockData.totalPrice, // Negative because it's an investment/expense
+        'Stock Purchase',
+        `Stock ${stock.productName} purchased - Qty: ${stockData.packQuantity} ${stockData.unit}`,
+        stock._id,
+        userId
+      );
+    }
+  } catch (error) {
+    // Log error but don't fail the request
+    console.error('Failed to update capital for stock purchase:', error);
+  }
+
+  // Create audit log
+  logAction({
+    userId,
+    action: 'Stock Created',
+    entityType: 'Stock',
+    entityId: stock._id,
+    metadata: {
+      productName: stock.productName,
+      category: stock.category,
+      quantity: stockData.packQuantity,
+      unit: stockData.unit,
+      totalPrice: stockData.totalPrice
+    }
+  });
+
   return stock;
 };
 
 /**
  * Update stock
  */
-const update = async (id, updateData) => {
+const update = async (id, updateData, userId) => {
   const stock = await Stock.findByIdAndUpdate(
     id,
     { $set: updateData },
@@ -88,18 +120,45 @@ const update = async (id, updateData) => {
     throw ApiError.notFound('Stock item not found');
   }
 
+  // Create audit log
+  logAction({
+    userId,
+    action: 'Stock Updated',
+    entityType: 'Stock',
+    entityId: stock._id,
+    metadata: {
+      productName: stock.productName,
+      category: stock.category,
+      changes: updateData
+    }
+  });
+
   return stock;
 };
 
 /**
  * Delete stock
  */
-const remove = async (id) => {
+const remove = async (id, userId) => {
   const stock = await Stock.findByIdAndDelete(id);
 
   if (!stock) {
     throw ApiError.notFound('Stock item not found');
   }
+
+  // Create audit log
+  logAction({
+    userId,
+    action: 'Stock Deleted',
+    entityType: 'Stock',
+    entityId: stock._id,
+    metadata: {
+      productName: stock.productName,
+      category: stock.category,
+      quantity: stock.currentQty,
+      totalPrice: (stock.currentQty * stock.openingRatePerUnit)
+    }
+  });
 
   return stock;
 };
@@ -107,7 +166,7 @@ const remove = async (id) => {
 /**
  * Adjust stock quantity
  */
-const adjustStock = async (id, quantity, type, reason) => {
+const adjustStock = async (id, quantity, type, reason, userId) => {
   const stock = await Stock.findById(id);
 
   if (!stock) {
@@ -124,6 +183,23 @@ const adjustStock = async (id, quantity, type, reason) => {
   }
 
   await stock.save();
+
+  // Create audit log
+  logAction({
+    userId,
+    action: 'Stock Quantity Adjusted',
+    entityType: 'Stock',
+    entityId: stock._id,
+    metadata: {
+      productName: stock.productName,
+      category: stock.category,
+      adjustmentType: type,
+      quantity: quantity,
+      unit: stock.unit,
+      reason: reason,
+      newQuantity: stock.currentQty
+    }
+  });
 
   return stock;
 };
