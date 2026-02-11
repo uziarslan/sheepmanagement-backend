@@ -59,6 +59,18 @@ router.put(
   animalController.declareDead
 );
 
+// PUT /api/animals/:id/mark-sold - Mark animal as sold
+router.put(
+  '/:id/mark-sold',
+  animalController.markAsSold
+);
+
+// POST /api/animals/bulk-mark-sold - Bulk mark animals as sold
+router.post(
+  '/bulk-mark-sold',
+  animalController.bulkMarkAsSold
+);
+
 // DELETE /api/animals/:id - Delete animal
 router.delete(
   '/:id',

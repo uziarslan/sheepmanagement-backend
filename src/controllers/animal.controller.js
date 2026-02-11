@@ -103,10 +103,34 @@ const getByPen = asyncHandler(async (req, res) => {
  * PUT /api/animals/:id/declare-dead
  */
 const declareDead = asyncHandler(async (req, res) => {
-  const result = await animalService.declareDead(req.params.id, req.body);
+  const result = await animalService.declareDead(req.params.id, req.body, req.user.id);
   
   res.status(HTTP_STATUS.OK).json(
-    successResponse(result, 'Animal marked as dead and costs distributed successfully')
+    successResponse(result, 'Animal marked as dead; loss recorded in capital')
+  );
+});
+
+/**
+ * Mark animal as sold
+ * PUT /api/animals/:id/mark-sold
+ */
+const markAsSold = asyncHandler(async (req, res) => {
+  const result = await animalService.markAsSold(req.params.id, req.body, req.user.id);
+  
+  res.status(HTTP_STATUS.OK).json(
+    successResponse(result, 'Animal marked as sold successfully')
+  );
+});
+
+/**
+ * Bulk mark animals as sold
+ * POST /api/animals/bulk-mark-sold
+ */
+const bulkMarkAsSold = asyncHandler(async (req, res) => {
+  const result = await animalService.bulkMarkAsSold(req.body.animals, req.user.id);
+  
+  res.status(HTTP_STATUS.OK).json(
+    successResponse(result, 'Bulk sale processing completed')
   );
 });
 
@@ -119,5 +143,7 @@ module.exports = {
   remove,
   moveToPen,
   getByPen,
-  declareDead
+  declareDead,
+  markAsSold,
+  bulkMarkAsSold
 };

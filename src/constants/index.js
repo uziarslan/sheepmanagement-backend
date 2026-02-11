@@ -148,6 +148,7 @@ const CAPITAL_TRANSACTION_TYPES = [
   'Additional Investment',
   'Animal Purchase',
   'Animal Sale',
+  'Animal Death',
   'Infrastructure',
   'Stock Purchase',
   'Salaries',

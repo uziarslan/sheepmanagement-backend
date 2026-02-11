@@ -1,4 +1,4 @@
-const { Animal, Pen } = require('../models');
+const { Animal, Pen, Capital } = require('../models');
 const { ApiError, getPaginationOptions, getSortOptions, getPaginationMeta } = require('../utils');
 
 /**
@@ -218,9 +218,9 @@ const getByPen = async (penId) => {
 };
 
 /**
- * Declare animal as dead and distribute its cost among remaining active animals
+ * Declare animal as dead; full cost is recorded as loss (no distribution to other animals)
  */
-const declareDead = async (id, deathData) => {
+const declareDead = async (id, deathData, userId) => {
   const animal = await Animal.findById(id);
 
   if (!animal) {
@@ -232,11 +232,11 @@ const declareDead = async (id, deathData) => {
   }
 
   // Calculate the animal's total cost (purchase price + all operational costs)
-  const animalTotalCost = animal.purchasePrice + 
-    (animal.totalFeedCost || 0) + 
-    (animal.totalHealthCost || 0) + 
-    (animal.totalVaccinationCost || 0) + 
-    (animal.totalDewormingCost || 0) + 
+  const animalTotalCost = animal.purchasePrice +
+    (animal.totalFeedCost || 0) +
+    (animal.totalHealthCost || 0) +
+    (animal.totalVaccinationCost || 0) +
+    (animal.totalDewormingCost || 0) +
     (animal.totalSalaryCost || 0);
 
   // Mark animal as dead
@@ -245,28 +245,161 @@ const declareDead = async (id, deathData) => {
   animal.deathReason = deathData.deathReason || '';
   await animal.save();
 
-  // Get count of remaining active animals
-  const activeAnimalCount = await Animal.countDocuments({ status: 'Active' });
-
-  let costDistributed = 0;
-  if (activeAnimalCount > 0 && animalTotalCost > 0) {
-    // Distribute the dead animal's total cost among all remaining active animals
-    const costPerAnimal = animalTotalCost / activeAnimalCount;
-    
-    await Animal.updateMany(
-      { status: 'Active' },
-      { $inc: { totalHealthCost: costPerAnimal } }
-    );
-    
-    costDistributed = animalTotalCost;
+  // Record full cost as loss in capital (no balance change)
+  if (animalTotalCost > 0 && userId) {
+    try {
+      const capital = await Capital.getOrCreate(userId);
+      await capital.addLoss(
+        animalTotalCost,
+        `Animal death: ${animal.tagId || animal.name || id} - ${deathData.deathReason || 'N/A'}`,
+        String(animal._id),
+        userId
+      );
+    } catch (err) {
+      console.error('Failed to record capital loss for dead animal:', err.message || err);
+    }
   }
 
   return {
     animal,
-    costDistributed,
-    activeAnimalsCount: activeAnimalCount,
-    costPerAnimal: activeAnimalCount > 0 ? animalTotalCost / activeAnimalCount : 0
+    lossRecorded: animalTotalCost
   };
+};
+
+/**
+ * Mark single animal as sold.
+ * Capital: cost returns to available balance; profit covers loss first, then adds to profit.
+ */
+const markAsSold = async (id, saleData, userId) => {
+  const animal = await Animal.findById(id);
+
+  if (!animal) {
+    throw ApiError.notFound('Animal not found');
+  }
+
+  if (animal.status === 'Sold') {
+    throw ApiError.badRequest('Animal is already marked as sold');
+  }
+
+  const totalCost = animal.purchasePrice +
+    (animal.totalFeedCost || 0) +
+    (animal.totalHealthCost || 0) +
+    (animal.totalVaccinationCost || 0) +
+    (animal.totalDewormingCost || 0) +
+    (animal.totalSalaryCost || 0);
+  const sellingPrice = saleData.sellingPrice || 0;
+  const profitFromSale = sellingPrice - totalCost;
+
+  // Mark animal as sold
+  animal.status = 'Sold';
+  animal.soldDate = saleData.soldDate || new Date();
+  animal.soldPrice = sellingPrice;
+  await animal.save();
+
+  if (userId) {
+    try {
+      const capital = await Capital.getOrCreate(userId);
+      await capital.recordAnimalSale(
+        totalCost,
+        sellingPrice,
+        `Animal sale: ${animal.tagId || animal.name || id}`,
+        String(animal._id),
+        userId
+      );
+    } catch (err) {
+      console.error('Failed to record capital for animal sale:', err.message || err);
+    }
+  }
+
+  return {
+    animal,
+    totalCost,
+    sellingPrice,
+    profit: profitFromSale
+  };
+};
+
+/**
+ * Bulk mark animals as sold. Capital updated per sale (cost to balance, profit to loss then profit).
+ */
+const bulkMarkAsSold = async (animalsData, userId) => {
+  const results = {
+    success: [],
+    failed: []
+  };
+
+  for (const saleItem of animalsData) {
+    try {
+      let animal;
+      if (saleItem.animalId) {
+        animal = await Animal.findById(saleItem.animalId);
+      } else if (saleItem.tagId) {
+        animal = await Animal.findOne({ tagId: saleItem.tagId });
+      }
+
+      if (!animal) {
+        results.failed.push({
+          ...saleItem,
+          error: `Animal not found: ${saleItem.animalId || saleItem.tagId}`
+        });
+        continue;
+      }
+
+      if (animal.status === 'Sold') {
+        results.failed.push({
+          ...saleItem,
+          tagId: animal.tagId,
+          error: 'Animal is already marked as sold'
+        });
+        continue;
+      }
+
+      const totalCost = animal.purchasePrice +
+        (animal.totalFeedCost || 0) +
+        (animal.totalHealthCost || 0) +
+        (animal.totalVaccinationCost || 0) +
+        (animal.totalDewormingCost || 0) +
+        (animal.totalSalaryCost || 0);
+      const sellingPrice = saleItem.sellingPrice || 0;
+      const profitFromSale = sellingPrice - totalCost;
+
+      animal.status = 'Sold';
+      animal.soldDate = saleItem.soldDate || new Date();
+      animal.soldPrice = sellingPrice;
+      await animal.save();
+
+      if (userId) {
+        try {
+          const capital = await Capital.getOrCreate(userId);
+          await capital.recordAnimalSale(
+            totalCost,
+            sellingPrice,
+            `Animal sale: ${animal.tagId || animal.name || animal._id}`,
+            String(animal._id),
+            userId
+          );
+        } catch (err) {
+          console.error('Failed to record capital for animal sale:', err.message || err);
+        }
+      }
+
+      results.success.push({
+        animalId: animal._id,
+        tagId: animal.tagId,
+        name: animal.name,
+        totalCost,
+        sellingPrice,
+        profit: profitFromSale
+      });
+    } catch (error) {
+      results.failed.push({
+        ...saleItem,
+        error: error.message
+      });
+    }
+  }
+
+  return results;
 };
 
 module.exports = {
@@ -278,5 +411,7 @@ module.exports = {
   remove,
   moveToPen,
   getByPen,
-  declareDead
+  declareDead,
+  markAsSold,
+  bulkMarkAsSold
 };

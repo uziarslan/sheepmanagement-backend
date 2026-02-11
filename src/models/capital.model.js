@@ -44,6 +44,16 @@ const capitalSchema = new mongoose.Schema(
       type: Number,
       default: 0
     },
+    profit: {
+      type: Number,
+      default: 0,
+      min: 0
+    },
+    loss: {
+      type: Number,
+      default: 0,
+      min: 0
+    },
     history: [transactionSchema],
     lastUpdated: {
       type: Date,
@@ -107,11 +117,62 @@ capitalSchema.methods.addTransaction = async function (amount, type, description
   return this.save();
 };
 
+/**
+ * Record loss from dead animal (full cost goes to loss; no balance change)
+ */
+capitalSchema.methods.addLoss = async function (amount, description, reference = null, createdBy = null) {
+  if (amount <= 0) return this;
+  this.loss += amount;
+  this.history.push({
+    amount: -amount,
+    type: 'Animal Death',
+    date: new Date(),
+    description: description || 'Animal death - loss recorded',
+    reference,
+    createdBy
+  });
+  this.lastUpdated = new Date();
+  return this.save();
+};
+
+/**
+ * Record animal sale: return cost to available balance, then apply profit to loss then to profit
+ */
+capitalSchema.methods.recordAnimalSale = async function (totalCost, sellingPrice, description, reference = null, createdBy = null) {
+  const profitFromSale = sellingPrice - totalCost;
+
+  // Return cost to available balance and reduce invested
+  this.availableAmount += totalCost;
+  this.investedAmount = Math.max(0, this.investedAmount - totalCost);
+
+  if (profitFromSale > 0) {
+    const amountToLoss = Math.min(profitFromSale, this.loss);
+    const amountToProfit = profitFromSale - amountToLoss;
+    this.loss = Math.max(0, this.loss - amountToLoss);
+    this.profit += amountToProfit;
+  } else if (profitFromSale < 0) {
+    this.loss += Math.abs(profitFromSale);
+  }
+
+  this.history.push({
+    amount: sellingPrice,
+    type: 'Animal Sale',
+    date: new Date(),
+    description: description || `Animal sale - cost returned ${totalCost}, sale ${sellingPrice}`,
+    reference,
+    createdBy
+  });
+  this.lastUpdated = new Date();
+  return this.save();
+};
+
 // Method to set initial capital
 capitalSchema.methods.setInitialCapital = async function (amount, createdBy = null) {
   this.totalCapital = amount;
   this.availableAmount = amount;
   this.investedAmount = 0;
+  this.profit = 0;
+  this.loss = 0;
   this.history = [{
     amount,
     type: 'Initial Investment',
@@ -134,6 +195,8 @@ capitalSchema.statics.getOrCreate = async function (userId) {
       totalCapital: 0,
       investedAmount: 0,
       availableAmount: 0,
+      profit: 0,
+      loss: 0,
       history: []
     });
   }
@@ -150,15 +213,19 @@ capitalSchema.statics.getSummary = async function (userId) {
       totalCapital: 0,
       investedAmount: 0,
       availableAmount: 0,
+      profit: 0,
+      loss: 0,
       totalIncome: 0,
       totalExpenses: 0
     };
   }
-  
+
   return {
     totalCapital: capital.totalCapital,
     investedAmount: capital.investedAmount,
     availableAmount: capital.availableAmount,
+    profit: capital.profit ?? 0,
+    loss: capital.loss ?? 0,
     totalIncome: capital.totalIncome,
     totalExpenses: capital.totalExpenses,
     lastUpdated: capital.lastUpdated,
