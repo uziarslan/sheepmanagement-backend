@@ -59,6 +59,18 @@ const createUser = async (userData) => {
 };
 
 /**
+ * Get all users (Admin-only). Excludes password; populates employee name when linked.
+ */
+const getUsers = async () => {
+  const users = await User.find({ isActive: { $ne: false } })
+    .select('-password')
+    .populate('employee', 'name designation')
+    .sort({ createdAt: -1 })
+    .lean();
+  return users;
+};
+
+/**
  * Admin reset password for any user
  */
 const resetPassword = async (userId, newPassword) => {
@@ -80,6 +92,7 @@ const resetPassword = async (userId, newPassword) => {
 
 module.exports = {
   createUser,
+  getUsers,
   resetPassword
 };
 

@@ -8,6 +8,9 @@ const { userValidation } = require('../validations');
 router.use(authenticate);
 router.use(authorize('Admin'));
 
+// GET /api/users - List all users (Admin only)
+router.get('/', userController.getUsers);
+
 // POST /api/users - Create a new user (Admin or Employee account)
 router.post(
   '/',

@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { animalController } = require('../controllers');
-const { authenticate, validate } = require('../middleware');
+const { authenticate, authorize, validate } = require('../middleware');
 const { animalValidation } = require('../validations');
 
 // All routes require authentication
@@ -59,15 +59,17 @@ router.put(
   animalController.declareDead
 );
 
-// PUT /api/animals/:id/mark-sold - Mark animal as sold
+// PUT /api/animals/:id/mark-sold - Mark animal as sold (Admin only)
 router.put(
   '/:id/mark-sold',
+  authorize('Admin'),
   animalController.markAsSold
 );
 
-// POST /api/animals/bulk-mark-sold - Bulk mark animals as sold
+// POST /api/animals/bulk-mark-sold - Bulk mark animals as sold (Admin only)
 router.post(
   '/bulk-mark-sold',
+  authorize('Admin'),
   animalController.bulkMarkAsSold
 );
 

@@ -28,6 +28,17 @@ const createUser = asyncHandler(async (req, res) => {
 });
 
 /**
+ * Get all users (Admin-only)
+ * GET /api/users
+ */
+const getUsers = asyncHandler(async (req, res) => {
+  const users = await userService.getUsers();
+  res.status(HTTP_STATUS.OK).json(
+    successResponse(users, 'Users retrieved successfully')
+  );
+});
+
+/**
  * Admin reset password for a user
  * PATCH /api/users/:id/password
  */
@@ -51,6 +62,7 @@ const resetPassword = asyncHandler(async (req, res) => {
 
 module.exports = {
   createUser,
+  getUsers,
   resetPassword
 };
 
