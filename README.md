@@ -162,6 +162,34 @@ npm test
 npm run test:watch
 ```
 
+## Deployment to Vercel
+
+This backend is configured for serverless deployment on Vercel:
+
+1. **Install Vercel CLI** (optional):
+```bash
+npm install -g vercel
+```
+
+2. **Set Environment Variables** in your Vercel project settings:
+   - `MONGODB_URI` - Your MongoDB connection string (use MongoDB Atlas)
+   - `JWT_SECRET` - Secret key for JWT tokens
+   - `CORS_ORIGIN` - Frontend URL(s), comma-separated (e.g., `https://yourfrontend.vercel.app,http://localhost:3000`)
+   - `NODE_ENV` - Set to `production`
+
+3. **Deploy**:
+```bash
+vercel
+```
+
+Or connect your GitHub repository to Vercel for automatic deployments.
+
+4. **Important Files**:
+   - `vercel.json` - Vercel configuration
+   - `api/index.js` - Serverless function entry point
+
+**Note**: The serverless configuration in `api/index.js` handles MongoDB connections efficiently for Vercel's serverless environment.
+
 ## License
 
 ISC
