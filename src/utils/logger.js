@@ -26,8 +26,9 @@ const transports = [
   })
 ];
 
-// Add file transports in production
-if (env === 'production') {
+// Add file transports in production (skip on Vercel/serverless - filesystem is read-only)
+const isServerless = process.env.VERCEL === '1' || process.env.AWS_LAMBDA_FUNCTION_NAME;
+if (env === 'production' && !isServerless) {
   transports.push(
     new winston.transports.File({
       filename: path.join(__dirname, '../../logs/error.log'),
