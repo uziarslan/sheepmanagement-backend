@@ -75,25 +75,8 @@ feedApplicationSchema.index({ date: -1 });
 // Pre-save middleware to deduct stock and update recipe
 feedApplicationSchema.pre('save', async function (next) {
   if (this.isNew) {
-    const Stock = mongoose.model('Stock');
     const FeedRecipe = mongoose.model('FeedRecipe');
     const Animal = mongoose.model('Animal');
-    
-    // Deduct ingredients from stock
-    if (this.ingredients && this.ingredients.length > 0) {
-      for (const ing of this.ingredients) {
-        if (ing.stock) {
-          const stock = await Stock.findById(ing.stock);
-          if (stock) {
-            if (stock.currentQty < ing.quantity) {
-              return next(new Error(`Insufficient stock for ${stock.productName}`));
-            }
-            stock.currentQty -= ing.quantity;
-            await stock.save();
-          }
-        }
-      }
-    }
     
     // Update recipe applied count
     if (this.recipe) {
