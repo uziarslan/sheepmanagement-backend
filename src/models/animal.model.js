@@ -64,6 +64,11 @@ const animalSchema = new mongoose.Schema(
       required: [true, 'Purchase price is required'],
       min: [0, 'Price cannot be negative']
     },
+    buyingWeight: {
+      type: Number,
+      min: [0, 'Buying weight cannot be negative']
+      // Not required for backward compatibility with existing data
+    },
     weight: {
       type: Number,
       required: [true, 'Weight is required'],
@@ -172,10 +177,11 @@ animalSchema.virtual('ageInMonths').get(function () {
   return months;
 });
 
-// Virtual for price per kg
+// Virtual for price per kg (based on buying weight, falls back to current weight for old data)
 animalSchema.virtual('pricePerKg').get(function () {
-  if (!this.weight || this.weight === 0) return 0;
-  return Math.round(this.purchasePrice / this.weight);
+  const weightForCalc = this.buyingWeight || this.weight;
+  if (!weightForCalc || weightForCalc === 0) return 0;
+  return Math.round(this.purchasePrice / weightForCalc);
 });
 
 // Virtual for operational cost (all costs spent on the animal, excluding purchase price)

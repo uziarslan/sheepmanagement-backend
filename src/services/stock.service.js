@@ -172,6 +172,12 @@ const adjustStock = async (id, quantity, type, reason, userId) => {
   if (!stock) {
     throw ApiError.notFound('Stock item not found');
   }
+  // Debug log: record adjustment intent and current qty
+  try {
+    console.info(`[stock.service] adjustStock called by user=${userId} id=${id} type=${type} qty=${quantity} reason=${reason} currentQty=${stock.currentQty}`);
+  } catch (e) {
+    console.error('Failed to log adjustStock call', e);
+  }
 
   if (type === 'deduct') {
     if (quantity > stock.currentQty) {

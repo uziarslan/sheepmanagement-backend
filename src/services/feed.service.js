@@ -232,16 +232,47 @@ const applyRecipe = async (data, userId) => {
     status: 'Active' 
   });
 
-  // Validate stock availability
+  // ── FIFO stock validation & deduction ──────────────────────────────────────
+  // For each recipe ingredient, find ALL stock entries with the same productName
+  // and openingRatePerUnit, sorted oldest purchaseDate first, and drain them FIFO.
+  // We collect deduction ops here and execute them after the application is saved.
+  const deductionOps = []; // [{ stockDoc, deductQty }]
+
   for (const ing of recipe.ingredients) {
-    const stock = await Stock.findById(ing.stock);
-    if (!stock) {
-      throw ApiError.notFound(`Stock item ${ing.name} not found`);
+    const ingName = ing.name;
+    // Load a reference stock to get the rate
+    const refStock = await Stock.findById(ing.stock);
+    if (!refStock) {
+      throw ApiError.notFound(`Stock item "${ingName}" not found`);
     }
-    if (stock.currentQty < ing.quantity) {
+    const ingRate = refStock.openingRatePerUnit;
+
+    // Fetch all stock docs with same productName + rate, sorted oldest first
+    const matchingStocks = await Stock.find({
+      productName: { $regex: new RegExp(`^${ingName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') },
+      openingRatePerUnit: ingRate,
+      category: refStock.category
+    }).sort({ purchaseDate: 1 });
+
+    console.info(`[feed.service] FIFO for "${ingName}" rate=${ingRate}: found ${matchingStocks.length} entries, need ${ing.quantity}`);
+
+    // Check combined availability
+    const totalAvailable = matchingStocks.reduce((s, st) => s + (st.currentQty || 0), 0);
+    if (totalAvailable < ing.quantity) {
       throw ApiError.badRequest(
-        `Insufficient stock for ${ing.name}. Available: ${stock.currentQty} ${stock.unit}`
+        `Insufficient stock for ${ingName}. Total available: ${totalAvailable} ${ing.unit}, needed: ${ing.quantity}`
       );
+    }
+
+    // Build FIFO deduction splits
+    let remaining = ing.quantity;
+    for (const st of matchingStocks) {
+      if (remaining <= 0) break;
+      if ((st.currentQty || 0) <= 0) continue;
+      const deductQty = Math.min(remaining, st.currentQty);
+      deductionOps.push({ stockDoc: st, deductQty });
+      console.info(`[feed.service]   → deduct ${deductQty} from stock ${st._id} (purchaseDate=${st.purchaseDate}, currentQty=${st.currentQty})`);
+      remaining -= deductQty;
     }
   }
 
@@ -269,6 +300,13 @@ const applyRecipe = async (data, userId) => {
   };
 
   const application = await FeedApplication.create(applicationData);
+
+  // Execute FIFO deductions now that the application is saved
+  for (const { stockDoc, deductQty } of deductionOps) {
+    stockDoc.currentQty -= deductQty;
+    await stockDoc.save();
+    console.info(`[feed.service]   ✓ stock ${stockDoc._id} currentQty updated to ${stockDoc.currentQty}`);
+  }
 
   // Create audit log
   logAction({
