@@ -22,6 +22,9 @@ const transactionSchema = new mongoose.Schema({
   reference: {
     type: String // Reference to related document (animal purchase, sale, etc.)
   },
+  invoiceUrl: {
+    type: String // Cloudinary URL for uploaded invoice
+  },
   createdBy: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User'
@@ -137,13 +140,18 @@ capitalSchema.methods.addLoss = async function (amount, description, reference =
 
 /**
  * Record animal sale: return cost to available balance, then apply profit to loss then to profit
+ * sellingCost = our expense (transport, commission) - reduces profit
  */
-capitalSchema.methods.recordAnimalSale = async function (totalCost, sellingPrice, description, reference = null, createdBy = null) {
-  const profitFromSale = sellingPrice - totalCost;
+capitalSchema.methods.recordAnimalSale = async function (totalCost, sellingPrice, description, reference = null, createdBy = null, sellingCost = 0) {
+  const profitFromSale = sellingPrice - totalCost - sellingCost;
 
   // Return cost to available balance and reduce invested
   this.availableAmount += totalCost;
   this.investedAmount = Math.max(0, this.investedAmount - totalCost);
+  // Deduct selling cost (our expense)
+  if (sellingCost > 0) {
+    this.availableAmount -= sellingCost;
+  }
 
   if (profitFromSale > 0) {
     const amountToLoss = Math.min(profitFromSale, this.loss);

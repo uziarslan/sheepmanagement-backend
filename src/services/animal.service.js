@@ -412,14 +412,17 @@ const markAsSold = async (id, saleData, userId) => {
     (animal.totalVaccinationCost || 0) +
     (animal.totalDewormingCost || 0) +
     (animal.totalSalaryCost || 0);
-  const sellingPrice = saleData.sellingPrice || 0;
-  const profitFromSale = sellingPrice - totalCost;
+  const sellingPrice = Number(saleData.sellingPrice) || 0; // what we receive from buyer
+  const sellingCost = Number(saleData.sellingCost) || 0;   // our expense (transport, etc.)
 
-  // Mark animal as sold
+  // Mark animal as sold (soldPrice = what we receive, sellingCost stored separately)
   animal.status = 'Sold';
   animal.soldDate = saleData.soldDate || new Date();
   animal.soldPrice = sellingPrice;
+  animal.soldCost = sellingCost;
   await animal.save();
+
+  const profitFromSale = sellingPrice - totalCost - sellingCost;
 
   if (userId) {
     try {
@@ -429,7 +432,8 @@ const markAsSold = async (id, saleData, userId) => {
         sellingPrice,
         `Animal sale: ${animal.tagId || animal.name || id}`,
         String(animal._id),
-        userId
+        userId,
+        sellingCost
       );
     } catch (err) {
       console.error('Failed to record capital for animal sale:', err.message || err);
@@ -447,6 +451,7 @@ const markAsSold = async (id, saleData, userId) => {
       name: animal.name,
       soldDate: animal.soldDate,
       soldPrice: sellingPrice,
+      soldCost: sellingCost,
       totalCost: totalCost,
       profit: profitFromSale
     }
@@ -456,6 +461,7 @@ const markAsSold = async (id, saleData, userId) => {
     animal,
     totalCost,
     sellingPrice,
+    soldCost: sellingCost,
     profit: profitFromSale
   };
 };
@@ -502,11 +508,13 @@ const bulkMarkAsSold = async (animalsData, userId) => {
         (animal.totalDewormingCost || 0) +
         (animal.totalSalaryCost || 0);
       const sellingPrice = saleItem.sellingPrice || 0;
-      const profitFromSale = sellingPrice - totalCost;
+      const sellingCost = Number(saleItem.sellingCost) || 0;
+      const profitFromSale = sellingPrice - totalCost - sellingCost;
 
       animal.status = 'Sold';
       animal.soldDate = saleItem.soldDate || new Date();
       animal.soldPrice = sellingPrice;
+      animal.soldCost = sellingCost;
       await animal.save();
 
       if (userId) {
@@ -517,7 +525,8 @@ const bulkMarkAsSold = async (animalsData, userId) => {
             sellingPrice,
             `Animal sale: ${animal.tagId || animal.name || animal._id}`,
             String(animal._id),
-            userId
+            userId,
+            sellingCost
           );
         } catch (err) {
           console.error('Failed to record capital for animal sale:', err.message || err);
@@ -535,6 +544,7 @@ const bulkMarkAsSold = async (animalsData, userId) => {
           name: animal.name,
           soldDate: animal.soldDate,
           soldPrice: sellingPrice,
+          soldCost: sellingCost,
           totalCost: totalCost,
           profit: profitFromSale,
           bulkOperation: true

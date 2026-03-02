@@ -28,7 +28,14 @@ const env = {
   
   // Logging
   logLevel: process.env.LOG_LEVEL || 'debug',
-  
+
+  // Cloudinary
+  cloudinary: {
+    cloudName: process.env.CLOUDINARY_CLOUD_NAME || '',
+    apiKey: process.env.CLOUDINARY_API_KEY || '',
+    apiSecret: process.env.CLOUDINARY_API_SECRET || ''
+  },
+
   // Helpers
   isDevelopment: process.env.NODE_ENV === 'development',
   isProduction: process.env.NODE_ENV === 'production',

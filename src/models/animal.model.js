@@ -116,6 +116,11 @@ const animalSchema = new mongoose.Schema(
       type: Number,
       min: [0, 'Sold price cannot be negative']
     },
+    soldCost: {
+      type: Number,
+      default: 0,
+      min: [0, 'Sold cost cannot be negative']
+    },
     deathDate: {
       type: Date
     },

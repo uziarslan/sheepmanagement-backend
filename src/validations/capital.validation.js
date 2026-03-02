@@ -26,8 +26,16 @@ const getTransactions = {
   })
 };
 
+// For file upload - only validate transactionId param (file validated by multer)
+const uploadTransactionInvoice = {
+  params: Joi.object().keys({
+    transactionId: Joi.string().hex().length(24).required()
+  })
+};
+
 module.exports = {
   initializeCapital,
   addTransaction,
-  getTransactions
+  getTransactions,
+  uploadTransactionInvoice
 };

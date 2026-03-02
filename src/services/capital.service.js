@@ -107,10 +107,32 @@ const getSummary = async (userId) => {
   return Capital.getSummary(userId);
 };
 
+/**
+ * Update transaction invoice URL
+ */
+const updateTransactionInvoice = async (userId, transactionId, invoiceUrl) => {
+  const capital = await Capital.findOne({ user: userId });
+
+  if (!capital) {
+    throw ApiError.notFound('Capital not found.');
+  }
+
+  const transaction = capital.history.id(transactionId);
+  if (!transaction) {
+    throw ApiError.notFound('Transaction not found.');
+  }
+
+  transaction.invoiceUrl = invoiceUrl;
+  await capital.save();
+
+  return capital;
+};
+
 module.exports = {
   get,
   initialize,
   addTransaction,
   getTransactions,
-  getSummary
+  getSummary,
+  updateTransactionInvoice
 };

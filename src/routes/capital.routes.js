@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const { capitalController } = require('../controllers');
 const { authenticate, authorize, validate } = require('../middleware');
+const { uploadInvoice } = require('../middleware/upload.middleware');
 const { capitalValidation } = require('../validations');
 
 // All routes require authentication and admin role
@@ -33,6 +34,14 @@ router.put(
   '/',
   validate(capitalValidation.addTransaction),
   capitalController.addTransaction
+);
+
+// POST /api/capital/transactions/:transactionId/invoice - Upload invoice for transaction
+router.post(
+  '/transactions/:transactionId/invoice',
+  validate(capitalValidation.uploadTransactionInvoice),
+  uploadInvoice,
+  capitalController.uploadInvoice
 );
 
 module.exports = router;
