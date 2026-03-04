@@ -1,5 +1,5 @@
 const mongoose = require('mongoose');
-const { STOCK_CATEGORIES, STOCK_UNITS } = require('../constants');
+const { STOCK_CATEGORIES, STOCK_UNITS, ASSET_TYPES } = require('../constants');
 
 const stockSchema = new mongoose.Schema(
   {
@@ -13,6 +13,11 @@ const stockSchema = new mongoose.Schema(
       type: String,
       required: [true, 'Category is required'],
       enum: STOCK_CATEGORIES
+    },
+    assetType: {
+      type: String,
+      enum: ASSET_TYPES,
+      default: null
     },
     unit: {
       type: String,

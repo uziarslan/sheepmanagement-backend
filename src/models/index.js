@@ -15,6 +15,7 @@ const FeedApplication = require('./feedApplication.model');
 const VaccineRecipe = require('./vaccineRecipe.model');
 const VaccineApplication = require('./vaccineApplication.model');
 const Capital = require('./capital.model');
+const Liability = require('./liability.model');
 const AuditLog = require('./auditLog.model');
 
 module.exports = {
@@ -35,5 +36,6 @@ module.exports = {
   VaccineRecipe,
   VaccineApplication,
   Capital,
+  Liability,
   AuditLog
 };

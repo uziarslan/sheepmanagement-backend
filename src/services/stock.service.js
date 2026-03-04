@@ -71,14 +71,29 @@ const create = async (stockData, userId) => {
     createdBy: userId
   });
 
-  // Deduct from capital
+  // Deduct from capital: totalPrice + transportation + loadingUnloading (Infrastructure for Assets, Stock Purchase for others)
   try {
     const capital = await Capital.findOne({ user: userId });
     if (capital && stockData.totalPrice) {
+      const transport = Number(stockData.transportation) || 0;
+      const loading = Number(stockData.loadingUnloading) || 0;
+      const totalCost = stockData.totalPrice + transport + loading;
+
+      const isAsset = stockData.category === 'Assets';
+      const txType = isAsset ? 'Infrastructure' : 'Stock Purchase';
+      let desc = isAsset
+        ? `Asset (${stockData.assetType || 'Others'}): ${stock.productName}`
+        : `Stock ${stock.productName} purchased - Qty: ${stockData.packQuantity} ${stockData.unit}`;
+      if (transport > 0 || loading > 0) {
+        const parts = [];
+        if (transport > 0) parts.push(`Transport: Rs.${transport}`);
+        if (loading > 0) parts.push(`Loading: Rs.${loading}`);
+        desc += ` (${parts.join(', ')})`;
+      }
       await capital.addTransaction(
-        -stockData.totalPrice, // Negative because it's an investment/expense
-        'Stock Purchase',
-        `Stock ${stock.productName} purchased - Qty: ${stockData.packQuantity} ${stockData.unit}`,
+        -totalCost,
+        txType,
+        desc,
         stock._id,
         userId
       );

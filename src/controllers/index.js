@@ -4,6 +4,7 @@ const penController = require('./pen.controller');
 const stockController = require('./stock.controller');
 const employeeController = require('./employee.controller');
 const advanceController = require('./advance.controller');
+const liabilityController = require('./liability.controller');
 const healthController = require('./health.controller');
 const feedController = require('./feed.controller');
 const vaccinationController = require('./vaccination.controller');
@@ -20,6 +21,7 @@ module.exports = {
   stockController,
   employeeController,
   advanceController,
+  liabilityController,
   healthController,
   feedController,
   vaccinationController,

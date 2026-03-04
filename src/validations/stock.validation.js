@@ -1,10 +1,11 @@
 const Joi = require('joi');
-const { STOCK_CATEGORIES, STOCK_UNITS } = require('../constants');
+const { STOCK_CATEGORIES, STOCK_UNITS, ASSET_TYPES } = require('../constants');
 
 const createStock = {
   body: Joi.object().keys({
     productName: Joi.string().required().max(200).trim(),
     category: Joi.string().required().valid(...STOCK_CATEGORIES),
+    assetType: Joi.string().valid(...ASSET_TYPES).allow(null, ''),
     unit: Joi.string().required().valid(...STOCK_UNITS),
     isStockItem: Joi.boolean().default(true),
     purchaseDate: Joi.date().allow(null),
@@ -12,6 +13,8 @@ const createStock = {
     unitSize: Joi.number().min(0),
     totalQuantity: Joi.number().min(0),
     totalPrice: Joi.number().min(0),
+    transportation: Joi.number().min(0).allow(null),
+    loadingUnloading: Joi.number().min(0).allow(null),
     costPerUnit: Joi.number().min(0),
     openingStockQty: Joi.number().required().min(0),
     openingRatePerUnit: Joi.number().required().min(0),
@@ -31,6 +34,7 @@ const updateStock = {
   body: Joi.object().keys({
     productName: Joi.string().max(200).trim(),
     category: Joi.string().valid(...STOCK_CATEGORIES),
+    assetType: Joi.string().valid(...ASSET_TYPES).allow(null, ''),
     unit: Joi.string().valid(...STOCK_UNITS),
     isStockItem: Joi.boolean(),
     purchaseDate: Joi.date().allow(null),

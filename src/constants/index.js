@@ -50,12 +50,15 @@ const PEN_TYPES = [
 const STOCK_CATEGORIES = [
   'Feeding',
   'Medication',
-  'Farm Accessories',
+  'Assets',
+  'Farm Accessories', // legacy, prefer Assets
   'Semen',
   'Seeds',
   'Fertilizers',
   'Pesticides'
 ];
+
+const ASSET_TYPES = ['Building', 'Machinery', 'Others'];
 
 const STOCK_UNITS = ['kg', 'gm', 'ltr', 'ml', 'nos'];
 
@@ -142,10 +145,21 @@ const CURE_STATUSES = ['Cured', 'Uncured', 'In Treatment'];
 // BCS values (1-10 scale, integers)
 const BCS_VALUES = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
 
+// Investment subtypes for capital (Partner1, Partner2, Retained Earnings)
+const INVESTMENT_SUBTYPES = [
+  'Partner1 (Imran Shah)',
+  'Partner2 (Raza Abbas)',
+  'Retained Earnings'
+];
+
+// Liability transaction types (we borrow from / return to lenders)
+const LIABILITY_TYPES = ['Borrowed', 'Returned'];
+
 // Capital transaction types
 const CAPITAL_TRANSACTION_TYPES = [
   'Initial Investment',
   'Additional Investment',
+  'Investment Withdrawal',
   'Animal Purchase',
   'Animal Sale',
   'Animal Death',
@@ -157,7 +171,9 @@ const CAPITAL_TRANSACTION_TYPES = [
   'Transportation',
   'Veterinary',
   'Other Income',
-  'Other Expense'
+  'Other Expense',
+  'Loan Borrowed',
+  'Loan Returned'
 ];
 
 // User roles
@@ -187,6 +203,7 @@ module.exports = {
   ANIMAL_STATUSES,
   PEN_TYPES,
   STOCK_CATEGORIES,
+  ASSET_TYPES,
   STOCK_UNITS,
   DEPARTMENTS,
   DESIGNATIONS,
@@ -201,6 +218,8 @@ module.exports = {
   DEWORMING_SCOPES,
   CURE_STATUSES,
   BCS_VALUES,
+  INVESTMENT_SUBTYPES,
+  LIABILITY_TYPES,
   CAPITAL_TRANSACTION_TYPES,
   USER_ROLES,
   HTTP_STATUS

@@ -1,5 +1,5 @@
 const mongoose = require('mongoose');
-const { CAPITAL_TRANSACTION_TYPES } = require('../constants');
+const { CAPITAL_TRANSACTION_TYPES, INVESTMENT_SUBTYPES } = require('../constants');
 
 const transactionSchema = new mongoose.Schema({
   amount: {
@@ -10,6 +10,11 @@ const transactionSchema = new mongoose.Schema({
     type: String,
     required: true,
     enum: CAPITAL_TRANSACTION_TYPES
+  },
+  investmentSubtype: {
+    type: String,
+    enum: INVESTMENT_SUBTYPES,
+    default: null
   },
   date: {
     type: Date,
@@ -38,6 +43,9 @@ const capitalSchema = new mongoose.Schema(
       default: 0,
       min: 0
     },
+    partner1Capital: { type: Number, default: 0, min: 0 },
+    partner2Capital: { type: Number, default: 0, min: 0 },
+    retainedEarningsCapital: { type: Number, default: 0, min: 0 },
     investedAmount: {
       type: Number,
       default: 0,
@@ -94,29 +102,48 @@ capitalSchema.virtual('totalExpenses').get(function () {
 });
 
 // Method to add transaction
-capitalSchema.methods.addTransaction = async function (amount, type, description, reference = null, createdBy = null) {
+capitalSchema.methods.addTransaction = async function (amount, type, description, reference = null, createdBy = null, investmentSubtype = null) {
   const transaction = {
     amount,
     type,
     date: new Date(),
     description,
     reference,
+    investmentSubtype,
     createdBy
   };
-  
+
   this.history.push(transaction);
-  
+
   // Update totals
   if (amount > 0) {
     this.totalCapital += amount;
     this.availableAmount += amount;
+    // Update subdivision for investment types (Additional Investment)
+    if (investmentSubtype && INVESTMENT_SUBTYPES.includes(investmentSubtype)) {
+      if (investmentSubtype === 'Partner1 (Imran Shah)') this.partner1Capital = (this.partner1Capital || 0) + amount;
+      else if (investmentSubtype === 'Partner2 (Raza Abbas)') this.partner2Capital = (this.partner2Capital || 0) + amount;
+      else if (investmentSubtype === 'Retained Earnings') this.retainedEarningsCapital = (this.retainedEarningsCapital || 0) + amount;
+    }
+  } else if (type === 'Investment Withdrawal' && investmentSubtype && INVESTMENT_SUBTYPES.includes(investmentSubtype)) {
+    // Deduct from specific subdivision and totals
+    const absAmount = Math.abs(amount);
+    if (investmentSubtype === 'Partner1 (Imran Shah)') {
+      this.partner1Capital = Math.max(0, (this.partner1Capital || 0) - absAmount);
+    } else if (investmentSubtype === 'Partner2 (Raza Abbas)') {
+      this.partner2Capital = Math.max(0, (this.partner2Capital || 0) - absAmount);
+    } else if (investmentSubtype === 'Retained Earnings') {
+      this.retainedEarningsCapital = Math.max(0, (this.retainedEarningsCapital || 0) - absAmount);
+    }
+    this.totalCapital = Math.max(0, this.totalCapital - absAmount);
+    this.availableAmount += amount; // amount is negative
   } else {
     this.investedAmount += Math.abs(amount);
     this.availableAmount += amount; // amount is negative
   }
-  
+
   this.lastUpdated = new Date();
-  
+
   return this.save();
 };
 
@@ -174,22 +201,52 @@ capitalSchema.methods.recordAnimalSale = async function (totalCost, sellingPrice
   return this.save();
 };
 
-// Method to set initial capital
-capitalSchema.methods.setInitialCapital = async function (amount, createdBy = null) {
-  this.totalCapital = amount;
-  this.availableAmount = amount;
+// Method to set initial capital (with subdivision breakdown)
+capitalSchema.methods.setInitialCapital = async function (partner1, partner2, retainedEarnings, createdBy = null) {
+  const total = (partner1 || 0) + (partner2 || 0) + (retainedEarnings || 0);
+  this.totalCapital = total;
+  this.availableAmount = total;
   this.investedAmount = 0;
   this.profit = 0;
   this.loss = 0;
-  this.history = [{
-    amount,
-    type: 'Initial Investment',
-    date: new Date(),
-    description: 'Initial capital investment',
-    createdBy
-  }];
-  this.lastUpdated = new Date();
-  
+  this.partner1Capital = partner1 || 0;
+  this.partner2Capital = partner2 || 0;
+  this.retainedEarningsCapital = retainedEarnings || 0;
+
+  // Add 3 transaction entries for clear history
+  const now = new Date();
+  if (partner1 > 0) {
+    this.history.push({
+      amount: partner1,
+      type: 'Initial Investment',
+      investmentSubtype: 'Partner1 (Imran Shah)',
+      date: now,
+      description: 'Initial capital - Partner1 (Imran Shah)',
+      createdBy
+    });
+  }
+  if (partner2 > 0) {
+    this.history.push({
+      amount: partner2,
+      type: 'Initial Investment',
+      investmentSubtype: 'Partner2 (Raza Abbas)',
+      date: now,
+      description: 'Initial capital - Partner2 (Raza Abbas)',
+      createdBy
+    });
+  }
+  if (retainedEarnings > 0) {
+    this.history.push({
+      amount: retainedEarnings,
+      type: 'Initial Investment',
+      investmentSubtype: 'Retained Earnings',
+      date: now,
+      description: 'Initial capital - Retained Earnings',
+      createdBy
+    });
+  }
+
+  this.lastUpdated = now;
   return this.save();
 };
 
@@ -228,8 +285,17 @@ capitalSchema.statics.getSummary = async function (userId) {
     };
   }
 
+  // Backward compat: legacy records without subdivision show total as Retained Earnings
+  const p1 = capital.partner1Capital ?? 0;
+  const p2 = capital.partner2Capital ?? 0;
+  const re = capital.retainedEarningsCapital ?? 0;
+  const hasSubdivision = p1 + p2 + re > 0;
+
   return {
     totalCapital: capital.totalCapital,
+    partner1Capital: p1,
+    partner2Capital: p2,
+    retainedEarningsCapital: hasSubdivision ? re : capital.totalCapital,
     investedAmount: capital.investedAmount,
     availableAmount: capital.availableAmount,
     profit: capital.profit ?? 0,

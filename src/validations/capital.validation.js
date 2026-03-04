@@ -1,9 +1,19 @@
 const Joi = require('joi');
-const { CAPITAL_TRANSACTION_TYPES } = require('../constants');
+const { CAPITAL_TRANSACTION_TYPES, INVESTMENT_SUBTYPES } = require('../constants');
 
 const initializeCapital = {
   body: Joi.object().keys({
-    amount: Joi.number().required().min(0)
+    partner1: Joi.number().min(0).default(0),
+    partner2: Joi.number().min(0).default(0),
+    retainedEarnings: Joi.number().min(0).default(0)
+  }).custom((value, helpers) => {
+    const total = (value.partner1 || 0) + (value.partner2 || 0) + (value.retainedEarnings || 0);
+    if (total <= 0) {
+      return helpers.error('any.invalid');
+    }
+    return value;
+  }).messages({
+    'any.invalid': 'At least one of partner1, partner2, or retainedEarnings must be greater than 0'
   })
 };
 
@@ -12,7 +22,8 @@ const addTransaction = {
     amount: Joi.number().required(),
     type: Joi.string().required().valid(...CAPITAL_TRANSACTION_TYPES),
     description: Joi.string().max(500).allow('', null),
-    reference: Joi.string().allow('', null)
+    reference: Joi.string().allow('', null),
+    investmentSubtype: Joi.string().valid(...INVESTMENT_SUBTYPES).allow(null, '')
   })
 };
 

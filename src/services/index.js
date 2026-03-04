@@ -4,6 +4,7 @@ const penService = require('./pen.service');
 const stockService = require('./stock.service');
 const employeeService = require('./employee.service');
 const advanceService = require('./advance.service');
+const liabilityService = require('./liability.service');
 const healthService = require('./health.service');
 const feedService = require('./feed.service');
 const vaccinationService = require('./vaccination.service');
@@ -19,6 +20,7 @@ module.exports = {
   stockService,
   employeeService,
   advanceService,
+  liabilityService,
   healthService,
   feedService,
   vaccinationService,

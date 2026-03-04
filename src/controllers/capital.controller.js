@@ -20,17 +20,18 @@ const get = asyncHandler(async (req, res) => {
 /**
  * Initialize capital
  * POST /api/capital/initialize
+ * Body: { partner1, partner2, retainedEarnings } - sum = total capital
  */
 const initialize = asyncHandler(async (req, res) => {
-  const { amount } = req.body;
-  const capital = await capitalService.initialize(req.user.id, amount);
+  const { partner1 = 0, partner2 = 0, retainedEarnings = 0 } = req.body;
+  const capital = await capitalService.initialize(req.user.id, { partner1, partner2, retainedEarnings });
 
   logAction({
     req,
     action: 'INITIALIZE_CAPITAL',
     entityType: 'Capital',
     entityId: capital.id,
-    metadata: { amount }
+    metadata: { partner1, partner2, retainedEarnings }
   });
 
   res.status(HTTP_STATUS.CREATED).json(
@@ -43,13 +44,14 @@ const initialize = asyncHandler(async (req, res) => {
  * PUT /api/capital
  */
 const addTransaction = asyncHandler(async (req, res) => {
-  const { amount, type, description, reference } = req.body;
+  const { amount, type, description, reference, investmentSubtype } = req.body;
   const capital = await capitalService.addTransaction(
     req.user.id,
     amount,
     type,
     description,
-    reference
+    reference,
+    investmentSubtype
   );
 
   logAction({
@@ -61,7 +63,8 @@ const addTransaction = asyncHandler(async (req, res) => {
       amount,
       type,
       description,
-      reference
+      reference,
+      investmentSubtype
     }
   });
   
