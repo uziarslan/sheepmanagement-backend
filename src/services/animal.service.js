@@ -86,12 +86,20 @@ const create = async (animalData, userId) => {
     createdBy: userId
   });
 
+  const totalPurchaseCost =
+    (animalData.purchasePrice || 0) +
+    (animalData.purchaseTransport || 0) +
+    (animalData.purchaseMandiExpenses || 0) +
+    (animalData.purchaseFuel || 0) +
+    (animalData.purchaseFood || 0) +
+    (animalData.purchaseHotel || 0);
+
   // Deduct from capital
   try {
     const capital = await Capital.findOne({ user: userId });
-    if (capital && animalData.purchasePrice) {
+    if (capital && totalPurchaseCost > 0) {
       await capital.addTransaction(
-        -animalData.purchasePrice, // Negative because it's an investment/expense
+        -totalPurchaseCost, // Negative because it's an investment/expense
         'Animal Purchase',
         `Animal ${animal.tagId} purchased`,
         animal._id,
@@ -341,8 +349,8 @@ const declareDead = async (id, deathData, userId) => {
     throw ApiError.badRequest('Animal is already marked as dead');
   }
 
-  // Calculate the animal's total cost (purchase price + all operational costs)
-  const animalTotalCost = animal.purchasePrice +
+  // Calculate the animal's total cost (total purchase cost + all operational costs)
+  const animalTotalCost = animal.totalPurchaseCost +
     (animal.totalFeedCost || 0) +
     (animal.totalHealthCost || 0) +
     (animal.totalVaccinationCost || 0) +
@@ -406,7 +414,7 @@ const markAsSold = async (id, saleData, userId) => {
     throw ApiError.badRequest('Animal is already marked as sold');
   }
 
-  const totalCost = animal.purchasePrice +
+  const totalCost = animal.totalPurchaseCost +
     (animal.totalFeedCost || 0) +
     (animal.totalHealthCost || 0) +
     (animal.totalVaccinationCost || 0) +
@@ -501,7 +509,7 @@ const bulkMarkAsSold = async (animalsData, userId) => {
         continue;
       }
 
-      const totalCost = animal.purchasePrice +
+      const totalCost = animal.totalPurchaseCost +
         (animal.totalFeedCost || 0) +
         (animal.totalHealthCost || 0) +
         (animal.totalVaccinationCost || 0) +

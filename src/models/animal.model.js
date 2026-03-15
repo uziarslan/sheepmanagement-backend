@@ -64,6 +64,12 @@ const animalSchema = new mongoose.Schema(
       required: [true, 'Purchase price is required'],
       min: [0, 'Price cannot be negative']
     },
+    // Purchasing expenses (added to total cost)
+    purchaseTransport: { type: Number, default: 0, min: 0 },
+    purchaseMandiExpenses: { type: Number, default: 0, min: 0 },
+    purchaseFuel: { type: Number, default: 0, min: 0 },
+    purchaseFood: { type: Number, default: 0, min: 0 },
+    purchaseHotel: { type: Number, default: 0, min: 0 },
     buyingWeight: {
       type: Number,
       min: [0, 'Buying weight cannot be negative']
@@ -189,14 +195,24 @@ animalSchema.virtual('pricePerKg').get(function () {
   return Math.round(this.purchasePrice / weightForCalc);
 });
 
-// Virtual for operational cost (all costs spent on the animal, excluding purchase price)
+// Virtual for purchasing expenses total
+animalSchema.virtual('purchaseExpensesTotal').get(function () {
+  return (this.purchaseTransport || 0) + (this.purchaseMandiExpenses || 0) + (this.purchaseFuel || 0) + (this.purchaseFood || 0) + (this.purchaseHotel || 0);
+});
+
+// Virtual for total purchase cost (price + purchasing expenses)
+animalSchema.virtual('totalPurchaseCost').get(function () {
+  return (this.purchasePrice || 0) + this.purchaseExpensesTotal;
+});
+
+// Virtual for operational cost (all costs spent on the animal, excluding purchase)
 animalSchema.virtual('cost').get(function () {
   return (this.totalFeedCost || 0) + (this.totalHealthCost || 0) + (this.totalVaccinationCost || 0) + (this.totalDewormingCost || 0) + (this.totalSalaryCost || 0);
 });
 
-// Virtual for total price (purchase price + operational cost)
+// Virtual for total price (total purchase cost + operational cost)
 animalSchema.virtual('totalPrice').get(function () {
-  return this.purchasePrice + this.cost;
+  return this.totalPurchaseCost + this.cost;
 });
 
 // Virtual for total price per kg
