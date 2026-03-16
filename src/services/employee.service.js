@@ -1,4 +1,5 @@
 const { Employee, User } = require('../models');
+const logger = require('../utils/logger');
 const { ApiError, getPaginationOptions, getSortOptions, getPaginationMeta } = require('../utils');
 const userService = require('./user.service');
 
@@ -136,12 +137,26 @@ const update = async (id, updateData) => {
  * Delete employee
  */
 const remove = async (id) => {
-  const employee = await Employee.findByIdAndDelete(id);
+  const employee = await Employee.findById(id);
 
   if (!employee) {
     throw ApiError.notFound('Employee not found');
   }
 
+  // Deactivate linked user if exists
+  try {
+    if (employee.user) {
+      await User.findByIdAndUpdate(employee.user, {
+        isActive: false,
+        employee: null
+      });
+    }
+  } catch (err) {
+    // Log error but continue with employee deletion
+    logger.error('Failed to deactivate linked user:', err.message || err);
+  }
+
+  await Employee.findByIdAndDelete(id);
   return employee;
 };
 

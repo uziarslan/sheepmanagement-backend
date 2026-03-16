@@ -4,6 +4,8 @@ const Pen = require('./pen.model');
 const Stock = require('./stock.model');
 const Employee = require('./employee.model');
 const Advance = require('./advance.model');
+const SalaryPayment = require('./salaryPayment.model');
+const Counter = require('./counter.model');
 const Vaccination = require('./vaccination.model');
 const Treatment = require('./treatment.model');
 const Deworming = require('./deworming.model');
@@ -25,6 +27,8 @@ module.exports = {
   Stock,
   Employee,
   Advance,
+  SalaryPayment,
+  Counter,
   Vaccination,
   Treatment,
   Deworming,

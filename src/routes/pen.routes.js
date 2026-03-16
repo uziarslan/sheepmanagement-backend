@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { penController } = require('../controllers');
-const { authenticate, validate } = require('../middleware');
+const { authenticate, authorize, validate } = require('../middleware');
 const { penValidation } = require('../validations');
 
 // All routes require authentication
@@ -23,6 +23,7 @@ router.get('/:id', penController.getById);
 // POST /api/pens - Create pen
 router.post(
   '/',
+  authorize('Admin', 'Manager'),
   validate(penValidation.createPen),
   penController.create
 );
@@ -30,11 +31,12 @@ router.post(
 // PUT /api/pens/:id - Update pen
 router.put(
   '/:id',
+  authorize('Admin', 'Manager'),
   validate(penValidation.updatePen),
   penController.update
 );
 
 // DELETE /api/pens/:id - Delete pen
-router.delete('/:id', penController.remove);
+router.delete('/:id', authorize('Admin', 'Manager'), penController.remove);
 
 module.exports = router;

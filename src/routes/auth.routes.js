@@ -19,10 +19,37 @@ router.post(
   authController.login
 );
 
+// P4-05: Rate-limit refresh-token to prevent brute-force session hijacking
 router.post(
   '/refresh-token',
+  authLimiter,
   validate(authValidation.refreshToken),
   authController.refreshToken
+);
+
+// Password reset routes (future implementation)
+router.post(
+  '/forgot-password',
+  authLimiter,
+  // TODO: Implement forgot password - send reset email
+  (req, res) => {
+    res.status(501).json({
+      success: false,
+      message: 'Password reset feature coming soon'
+    });
+  }
+);
+
+router.post(
+  '/reset-password',
+  authLimiter,
+  // TODO: Implement reset password - validate token and update password
+  (req, res) => {
+    res.status(501).json({
+      success: false,
+      message: 'Password reset feature coming soon'
+    });
+  }
 );
 
 // Protected routes

@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { vaccinationController } = require('../controllers');
-const { authenticate, validate } = require('../middleware');
+const { authenticate, authorize, validate } = require('../middleware');
 const { vaccinationValidation } = require('../validations');
 
 // All routes require authentication
@@ -21,6 +21,7 @@ router.get('/vaccines/:id', vaccinationController.getVaccineById);
 // POST /api/vaccination/vaccines - Create vaccine (add to stock)
 router.post(
   '/vaccines',
+  authorize('Admin', 'Manager'),
   validate(vaccinationValidation.createVaccine),
   vaccinationController.createVaccine
 );
@@ -28,12 +29,13 @@ router.post(
 // PUT /api/vaccination/vaccines/:id - Update vaccine
 router.put(
   '/vaccines/:id',
+  authorize('Admin', 'Manager'),
   validate(vaccinationValidation.updateVaccine),
   vaccinationController.updateVaccine
 );
 
 // DELETE /api/vaccination/vaccines/:id - Delete vaccine
-router.delete('/vaccines/:id', vaccinationController.deleteVaccine);
+router.delete('/vaccines/:id', authorize('Admin', 'Manager'), vaccinationController.deleteVaccine);
 
 // ============ APPLICATIONS ============
 // GET /api/vaccination/applications - Get all applications
@@ -46,6 +48,7 @@ router.get(
 // POST /api/vaccination/applications - Apply vaccine
 router.post(
   '/applications',
+  authorize('Admin', 'Manager'),
   validate(vaccinationValidation.applyVaccine),
   vaccinationController.applyVaccine
 );
@@ -54,6 +57,6 @@ router.post(
 router.get('/applications/:id', vaccinationController.getApplicationById);
 
 // DELETE /api/vaccination/applications/:id - Delete application
-router.delete('/applications/:id', vaccinationController.deleteApplication);
+router.delete('/applications/:id', authorize('Admin', 'Manager'), vaccinationController.deleteApplication);
 
 module.exports = router;

@@ -1,4 +1,5 @@
 const { FeedRecipe, FeedApplication, Stock, Animal, Pen } = require('../models');
+const logger = require('../utils/logger');
 const { ApiError, getPaginationOptions, getSortOptions, getPaginationMeta, logAction } = require('../utils');
 
 // ============ RECIPE SERVICES ============
@@ -254,7 +255,7 @@ const applyRecipe = async (data, userId) => {
       category: refStock.category
     }).sort({ purchaseDate: 1 });
 
-    console.info(`[feed.service] FIFO for "${ingName}" rate=${ingRate}: found ${matchingStocks.length} entries, need ${ing.quantity}`);
+    logger.info(`[feed.service] FIFO for "${ingName}" rate=${ingRate}: found ${matchingStocks.length} entries, need ${ing.quantity}`);
 
     // Check combined availability
     const totalAvailable = matchingStocks.reduce((s, st) => s + (st.currentQty || 0), 0);
@@ -271,9 +272,15 @@ const applyRecipe = async (data, userId) => {
       if ((st.currentQty || 0) <= 0) continue;
       const deductQty = Math.min(remaining, st.currentQty);
       deductionOps.push({ stockDoc: st, deductQty });
-      console.info(`[feed.service]   → deduct ${deductQty} from stock ${st._id} (purchaseDate=${st.purchaseDate}, currentQty=${st.currentQty})`);
+      logger.info(`[feed.service]   → deduct ${deductQty} from stock ${st._id} (purchaseDate=${st.purchaseDate}, currentQty=${st.currentQty})`);
       remaining -= deductQty;
     }
+  }
+
+  // Calculate cost per animal with proper float rounding
+  let costPerAnimal = 0;
+  if (animalCount > 0) {
+    costPerAnimal = Math.floor(recipe.totalCost * 100 / animalCount) / 100;
   }
 
   // Prepare application data
@@ -293,20 +300,21 @@ const applyRecipe = async (data, userId) => {
       total: ing.total
     })),
     totalCost: recipe.totalCost,
-    costPerAnimal: animalCount > 0 ? recipe.totalCost / animalCount : 0,
+    costPerAnimal,
     notes: data.notes,
     appliedBy: userId,
     createdBy: userId
   };
 
-  const application = await FeedApplication.create(applicationData);
-
-  // Execute FIFO deductions now that the application is saved
+  // P1-05 FIX: Execute ALL stock deductions FIRST, before saving the application.
+  // If any deduction fails here, no application record is created — no partial commit.
   for (const { stockDoc, deductQty } of deductionOps) {
     stockDoc.currentQty -= deductQty;
     await stockDoc.save();
-    console.info(`[feed.service]   ✓ stock ${stockDoc._id} currentQty updated to ${stockDoc.currentQty}`);
   }
+
+  // Only save application AFTER all deductions succeed
+  const application = await FeedApplication.create(applicationData);
 
   // Create audit log
   logAction({
@@ -320,11 +328,47 @@ const applyRecipe = async (data, userId) => {
       animalCount: animalCount,
       ingredientCount: recipe.ingredients.length,
       totalCost: recipe.totalCost,
-      costPerAnimal: animalCount > 0 ? recipe.totalCost / animalCount : 0
+      costPerAnimal
     }
   });
 
   return application.populate(['recipe', 'pen', 'appliedBy']);
+};
+
+/**
+ * Apply a recipe across a date range (P3-09 / F-57).
+ * Replaces up-to-90 sequential frontend API calls with one backend call.
+ *
+ * @param {{ recipe, pen, dateStart, dateEnd, notes }} data
+ * @param {string} userId
+ * @returns {{ succeeded: object[], failed: { date: string, error: string }[] }}
+ */
+const applyRecipeRange = async (data, userId) => {
+  const { recipe, pen, dateStart, dateEnd, notes } = data;
+
+  // Build the list of ISO date strings in the range (inclusive, max 90)
+  const start = new Date(dateStart);
+  const end   = new Date(dateEnd);
+  const MAX_DAYS = 90;
+  const dates = [];
+  for (let d = new Date(start); d <= end && dates.length < MAX_DAYS; d.setDate(d.getDate() + 1)) {
+    dates.push(new Date(d).toISOString().split('T')[0]);
+  }
+
+  const succeeded = [];
+  const failed    = [];
+
+  for (const date of dates) {
+    try {
+      const application = await applyRecipe({ recipe, pen, date, notes }, userId);
+      succeeded.push(application);
+    } catch (err) {
+      failed.push({ date, error: err.message || 'Unknown error' });
+      // Continue processing remaining dates even if one fails
+    }
+  }
+
+  return { succeeded, failed };
 };
 
 module.exports = {
@@ -336,5 +380,6 @@ module.exports = {
   deleteRecipe,
   // Applications
   getApplications,
-  applyRecipe
+  applyRecipe,
+  applyRecipeRange
 };

@@ -1,5 +1,13 @@
+const crypto = require('crypto');
 const { User } = require('../models');
 const { jwt, ApiError } = require('../utils');
+
+/**
+ * Hash refresh token with SHA-256
+ */
+const hashRefreshToken = (token) => {
+  return crypto.createHash('sha256').update(token).digest('hex');
+};
 
 /**
  * Register a new user
@@ -23,8 +31,8 @@ const register = async (userData) => {
   // Generate tokens
   const tokens = jwt.generateTokenPair(user);
 
-  // Save refresh token
-  user.refreshToken = tokens.refreshToken;
+  // Save hashed refresh token
+  user.refreshToken = hashRefreshToken(tokens.refreshToken);
   await user.save();
 
   return {
@@ -39,7 +47,7 @@ const register = async (userData) => {
 const login = async (email, password) => {
   // Find user by email
   const user = await User.findOne({ email }).select('+password');
-  
+
   if (!user) {
     throw ApiError.unauthorized('Invalid email or password');
   }
@@ -58,8 +66,8 @@ const login = async (email, password) => {
   // Generate tokens
   const tokens = jwt.generateTokenPair(user);
 
-  // Save refresh token
-  user.refreshToken = tokens.refreshToken;
+  // Save hashed refresh token
+  user.refreshToken = hashRefreshToken(tokens.refreshToken);
   await user.save();
 
   return {
@@ -79,15 +87,21 @@ const logout = async (userId) => {
 /**
  * Refresh access token
  */
-const refreshToken = async (refreshToken) => {
+const refreshToken = async (refreshTokenStr) => {
   try {
-    // Verify refresh token
-    const decoded = jwt.verifyToken(refreshToken);
+    // Verify refresh token signature
+    const decoded = jwt.verifyRefreshToken(refreshTokenStr);
 
     // Find user with this refresh token
     const user = await User.findById(decoded.id).select('+refreshToken');
 
-    if (!user || user.refreshToken !== refreshToken) {
+    if (!user) {
+      throw ApiError.unauthorized('Invalid refresh token');
+    }
+
+    // Compare hashed refresh token
+    const tokenHash = hashRefreshToken(refreshTokenStr);
+    if (user.refreshToken !== tokenHash) {
       throw ApiError.unauthorized('Invalid refresh token');
     }
 
@@ -98,13 +112,16 @@ const refreshToken = async (refreshToken) => {
     // Generate new tokens
     const tokens = jwt.generateTokenPair(user);
 
-    // Save new refresh token
-    user.refreshToken = tokens.refreshToken;
+    // Save new hashed refresh token
+    user.refreshToken = hashRefreshToken(tokens.refreshToken);
     await user.save();
 
     return tokens;
   } catch (error) {
-    throw ApiError.unauthorized('Invalid refresh token');
+    if (error.name === 'JsonWebTokenError' || error.name === 'TokenExpiredError') {
+      throw ApiError.unauthorized('Invalid refresh token');
+    }
+    throw error;
   }
 };
 

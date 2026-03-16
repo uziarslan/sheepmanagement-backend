@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { advanceController } = require('../controllers');
-const { authenticate, validate } = require('../middleware');
+const { authenticate, authorize, validate } = require('../middleware');
 const { advanceValidation } = require('../validations');
 
 // All routes require authentication
@@ -24,14 +24,15 @@ router.get(
   advanceController.getAll
 );
 
-// POST /api/advances - Create advance
+// POST /api/advances - Create advance (Admin, Manager only)
 router.post(
   '/',
+  authorize('Admin', 'Manager'),
   validate(advanceValidation.createAdvance),
   advanceController.create
 );
 
-// DELETE /api/advances/:id - Delete advance
-router.delete('/:id', advanceController.remove);
+// DELETE /api/advances/:id - Delete advance (Admin, Manager only)
+router.delete('/:id', authorize('Admin', 'Manager'), advanceController.remove);
 
 module.exports = router;

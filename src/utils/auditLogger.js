@@ -10,6 +10,11 @@ const logAction = ({ req, userId, action, entityType, entityId, metadata }) => {
     const resolvedUserId =
       userId || (req && req.user ? req.user.id || req.user._id : null);
 
+    // P6-06 / F-69: Warn when financial/critical operations have no audit trail owner
+    if (!resolvedUserId) {
+      logger.warn(`Audit log missing userId for action: ${action} on ${entityType || 'unknown'}`);
+    }
+
     const ip =
       (req &&
         (req.ip ||

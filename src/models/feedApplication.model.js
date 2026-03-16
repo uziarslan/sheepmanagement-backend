@@ -62,8 +62,6 @@ const feedApplicationSchema = new mongoose.Schema(
   },
   {
     timestamps: true,
-    toJSON: { virtuals: true },
-    toObject: { virtuals: true }
   }
 );
 
@@ -86,14 +84,25 @@ feedApplicationSchema.pre('save', async function (next) {
       }
     }
     
-    // Distribute cost to animals in pen
+    // Distribute cost to animals in pen with proper rounding
     if (this.pen && this.animalCount > 0) {
-      const costPerAnimal = this.totalCost / this.animalCount;
-      
+      const costPerAnimal = Math.floor((this.totalCost / this.animalCount) * 100) / 100;
+      const remainder = Math.round((this.totalCost - (costPerAnimal * this.animalCount)) * 100) / 100;
+
       await Animal.updateMany(
         { pen: this.pen, status: 'Active' },
         { $inc: { totalFeedCost: costPerAnimal } }
       );
+
+      // Add remainder to first animal
+      if (remainder > 0) {
+        const firstAnimal = await Animal.findOne({ pen: this.pen, status: 'Active' });
+        if (firstAnimal) {
+          await Animal.findByIdAndUpdate(firstAnimal._id, {
+            $inc: { totalFeedCost: remainder }
+          });
+        }
+      }
     }
   }
   next();

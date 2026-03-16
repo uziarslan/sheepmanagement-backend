@@ -80,8 +80,6 @@ const treatmentSchema = new mongoose.Schema(
   },
   {
     timestamps: true,
-    toJSON: { virtuals: true },
-    toObject: { virtuals: true }
   }
 );
 
@@ -92,37 +90,17 @@ treatmentSchema.index({ cureStatus: 1 });
 treatmentSchema.index({ diagnosis: 1 });
 
 // Pre-save middleware
-treatmentSchema.pre('save', async function (next) {
+treatmentSchema.pre('save', function (next) {
   // Calculate expected end date
   if (this.duration && this.date) {
     this.expectedEndDate = new Date(this.date.getTime() + this.duration * 24 * 60 * 60 * 1000);
   }
-  
-  // Deduct stock for new treatments
+
+  // Calculate total amount for new treatments
   if (this.isNew && this.medicines && this.medicines.length > 0) {
-    const Stock = mongoose.model('Stock');
-    
-    for (const med of this.medicines) {
-      const stock = await Stock.findById(med.medicine);
-      if (stock) {
-        if (stock.currentQty < med.quantity) {
-          return next(new Error(`Insufficient stock for ${stock.productName}`));
-        }
-        stock.currentQty -= med.quantity;
-        await stock.save();
-      }
-    }
-    
-    // Calculate total amount
     this.totalAmount = this.medicines.reduce((sum, med) => sum + (med.total || 0), 0);
-    
-    // Update animal health cost
-    const Animal = mongoose.model('Animal');
-    await Animal.findByIdAndUpdate(this.animal, {
-      $inc: { totalHealthCost: this.totalAmount }
-    });
   }
-  
+
   next();
 });
 

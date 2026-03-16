@@ -18,19 +18,32 @@ const generateToken = (payload) => {
  * @returns {string} JWT refresh token
  */
 const generateRefreshToken = (payload) => {
-  return jwt.sign(payload, env.jwtSecret, {
+  return jwt.sign(payload, env.jwtRefreshSecret, {
     expiresIn: env.jwtRefreshExpiresIn
   });
 };
 
 /**
- * Verify token
+ * Verify access token
  * @param {string} token - JWT token
  * @returns {Object} Decoded payload
  */
 const verifyToken = (token) => {
   try {
     return jwt.verify(token, env.jwtSecret);
+  } catch (error) {
+    throw error;
+  }
+};
+
+/**
+ * Verify refresh token
+ * @param {string} token - JWT refresh token
+ * @returns {Object} Decoded payload
+ */
+const verifyRefreshToken = (token) => {
+  try {
+    return jwt.verify(token, env.jwtRefreshSecret);
   } catch (error) {
     throw error;
   }
@@ -67,6 +80,7 @@ module.exports = {
   generateToken,
   generateRefreshToken,
   verifyToken,
+  verifyRefreshToken,
   decodeToken,
   generateTokenPair
 };

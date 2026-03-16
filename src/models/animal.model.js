@@ -166,9 +166,7 @@ const animalSchema = new mongoose.Schema(
     }
   },
   {
-    timestamps: true,
-    toJSON: { virtuals: true },
-    toObject: { virtuals: true }
+    timestamps: true
   }
 );
 
@@ -232,12 +230,38 @@ animalSchema.statics.getCountByPen = async function (penId) {
   return this.countDocuments({ pen: penId, status: 'Active' });
 };
 
+// Static method to recalculate animal costs (maintenance function for denormalized fields)
+// This is a maintenance function to fix drift in cost fields
+animalSchema.statics.recalculateCosts = async function(animalId) {
+  const Animal = this;
+  const animal = await Animal.findById(animalId);
+  if (!animal) return null;
+
+  // Ensure cost fields aren't negative
+  const update = {};
+  if (animal.totalFeedCost < 0) update.totalFeedCost = 0;
+  if (animal.totalHealthCost < 0) update.totalHealthCost = 0;
+  if (animal.totalVaccinationCost < 0) update.totalVaccinationCost = 0;
+  if (animal.totalDewormingCost < 0) update.totalDewormingCost = 0;
+  if (animal.totalSalaryCost < 0) update.totalSalaryCost = 0;
+
+  if (Object.keys(update).length > 0) {
+    return Animal.findByIdAndUpdate(animalId, { $set: update }, { new: true });
+  }
+  return animal;
+};
+
 // Pre-save middleware to generate tagId if not provided
 animalSchema.pre('save', async function (next) {
   if (!this.tagId) {
-    const prefix = this.animalType === 'Sheep' ? 'SHP' : 'GOT';
-    const count = await this.constructor.countDocuments();
-    this.tagId = `${prefix}-${String(count + 1).padStart(3, '0')}`;
+    try {
+      const Counter = mongoose.model('Counter');
+      const prefix = this.animalType === 'Sheep' ? 'SHP' : 'GOT';
+      const seq = await Counter.getNextSequence('animal_tagId');
+      this.tagId = `${prefix}-${String(seq).padStart(3, '0')}`;
+    } catch (error) {
+      return next(error);
+    }
   }
   next();
 });

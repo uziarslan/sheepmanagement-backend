@@ -26,10 +26,6 @@ const getSalaryPayments = asyncHandler(async (req, res) => {
 const createSalaryPayment = asyncHandler(async (req, res) => {
   const payment = await salaryService.createSalaryPayment(req.body, req.user.id);
 
-  res.status(HTTP_STATUS.CREATED).json(
-    successResponse(payment, 'Salary paid successfully')
-  );
-
   logAction({
     req,
     action: 'CREATE_SALARY_PAYMENT',
@@ -42,6 +38,10 @@ const createSalaryPayment = asyncHandler(async (req, res) => {
       year: payment.year
     }
   });
+
+  res.status(HTTP_STATUS.CREATED).json(
+    successResponse(payment, 'Salary paid successfully')
+  );
 });
 
 module.exports = {

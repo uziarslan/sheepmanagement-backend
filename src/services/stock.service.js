@@ -1,4 +1,5 @@
 const { Stock, Capital } = require('../models');
+const logger = require('../utils/logger');
 const { ApiError, getPaginationOptions, getSortOptions, getPaginationMeta, logAction } = require('../utils');
 
 /**
@@ -100,7 +101,7 @@ const create = async (stockData, userId) => {
     }
   } catch (error) {
     // Log error but don't fail the request
-    console.error('Failed to update capital for stock purchase:', error);
+    logger.error('Failed to update capital for stock purchase:', error);
   }
 
   // Create audit log
@@ -125,15 +126,16 @@ const create = async (stockData, userId) => {
  * Update stock
  */
 const update = async (id, updateData, userId) => {
-  const stock = await Stock.findByIdAndUpdate(
-    id,
-    { $set: updateData },
-    { new: true, runValidators: true }
-  );
+  // Load document to trigger pre-save hook
+  const stock = await Stock.findById(id);
 
   if (!stock) {
     throw ApiError.notFound('Stock item not found');
   }
+
+  // Assign fields and save (triggers pre-save hooks)
+  Object.assign(stock, updateData);
+  await stock.save();
 
   // Create audit log
   logAction({
@@ -189,9 +191,9 @@ const adjustStock = async (id, quantity, type, reason, userId) => {
   }
   // Debug log: record adjustment intent and current qty
   try {
-    console.info(`[stock.service] adjustStock called by user=${userId} id=${id} type=${type} qty=${quantity} reason=${reason} currentQty=${stock.currentQty}`);
+    logger.info(`[stock.service] adjustStock called by user=${userId} id=${id} type=${type} qty=${quantity} reason=${reason} currentQty=${stock.currentQty}`);
   } catch (e) {
-    console.error('Failed to log adjustStock call', e);
+    logger.error('Failed to log adjustStock call', e);
   }
 
   if (type === 'deduct') {

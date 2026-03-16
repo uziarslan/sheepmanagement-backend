@@ -9,10 +9,7 @@ const { HTTP_STATUS } = require('../constants');
 const createUser = asyncHandler(async (req, res) => {
   const user = await userService.createUser(req.body);
 
-  res.status(HTTP_STATUS.CREATED).json(
-    successResponse(user, 'User created successfully')
-  );
-
+  // Log BEFORE sending response
   logAction({
     req,
     userId: req.user.id,
@@ -25,6 +22,10 @@ const createUser = asyncHandler(async (req, res) => {
       employeeId: user.employee || null
     }
   });
+
+  res.status(HTTP_STATUS.CREATED).json(
+    successResponse(user, 'User created successfully')
+  );
 });
 
 /**
@@ -47,10 +48,6 @@ const resetPassword = asyncHandler(async (req, res) => {
 
   await userService.resetPassword(req.params.id, newPassword);
 
-  res.status(HTTP_STATUS.OK).json(
-    successResponse(null, 'Password reset successfully')
-  );
-
   logAction({
     req,
     userId: req.user.id,
@@ -58,11 +55,36 @@ const resetPassword = asyncHandler(async (req, res) => {
     entityType: 'User',
     entityId: req.params.id
   });
+
+  res.status(HTTP_STATUS.OK).json(
+    successResponse(null, 'Password reset successfully')
+  );
+});
+
+/**
+ * Reactivate a deactivated user (P4-04 / F-65)
+ * PATCH /api/users/:id/activate
+ */
+const activateUser = asyncHandler(async (req, res) => {
+  const user = await userService.activateUser(req.params.id);
+
+  logAction({
+    req,
+    userId: req.user.id,
+    action: 'ACTIVATE_USER',
+    entityType: 'User',
+    entityId: req.params.id
+  });
+
+  res.status(HTTP_STATUS.OK).json(
+    successResponse(user, 'User activated successfully')
+  );
 });
 
 module.exports = {
   createUser,
   getUsers,
-  resetPassword
+  resetPassword,
+  activateUser
 };
 

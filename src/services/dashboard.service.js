@@ -9,10 +9,29 @@ const {
   FeedApplication
 } = require('../models');
 
+// P6-04: Simple in-memory cache with 60-second TTL to avoid 10+ parallel DB queries on every page load
+const _cache = new Map();
+const CACHE_TTL_MS = 60 * 1000; // 60 seconds
+
+const getCached = (key) => {
+  const entry = _cache.get(key);
+  if (entry && Date.now() - entry.ts < CACHE_TTL_MS) return entry.data;
+  return null;
+};
+const setCache = (key, data) => _cache.set(key, { data, ts: Date.now() });
+const invalidateCache = (prefix) => {
+  for (const key of _cache.keys()) {
+    if (key.startsWith(prefix)) _cache.delete(key);
+  }
+};
+
 /**
- * Get dashboard statistics
+ * Get dashboard statistics (cached 60 s per userId)
  */
 const getStats = async (userId) => {
+  const cacheKey = `stats_${userId}`;
+  const cached = getCached(cacheKey);
+  if (cached) return cached;
   const [
     totalAnimals,
     activeAnimals,
@@ -126,7 +145,7 @@ const getStats = async (userId) => {
   ]);
 
   // Return flat structure for frontend compatibility
-  return {
+  const result = {
     // Animal stats
     totalAnimals,
     activeAnimals,
@@ -135,29 +154,32 @@ const getStats = async (userId) => {
     totalAnimalValue: animalValue[0]?.totalPurchaseValue || 0,
     totalFeedCost: animalValue[0]?.totalFeedCost || 0,
     totalHealthCost: animalValue[0]?.totalHealthCost || 0,
-    
+
     // Pen stats
     totalPens,
     penOccupancy,
-    
+
     // Stock stats
     totalStockItems,
     lowStockItems,
     totalStockValue: stockValue[0]?.totalValue || 0,
-    
+
     // Employee stats
     totalEmployees,
     activeEmployees,
-    
+
     // Capital stats
     totalCapital: capital?.totalCapital || 0,
     investedCapital: capital?.investedAmount || 0,
     availableCapital: capital?.availableAmount || 0,
-    
+
     // Health stats
     recentTreatments,
     uncuredTreatments
   };
+
+  setCache(cacheKey, result);
+  return result;
 };
 
 /**
@@ -167,23 +189,23 @@ const getRecentActivities = async (userId, limit = 10) => {
   const [animals, treatments, vaccinations, feedApplications] = await Promise.all([
     Animal.find()
       .sort({ createdAt: -1 })
-      .limit(5)
+      .limit(limit)
       .select('tagId name animalType createdAt')
       .lean(),
     Treatment.find()
       .sort({ createdAt: -1 })
-      .limit(5)
+      .limit(limit)
       .populate('animal', 'tagId name')
       .select('diagnosis cureStatus date')
       .lean(),
     Vaccination.find()
       .sort({ createdAt: -1 })
-      .limit(5)
+      .limit(limit)
       .select('scope animalCount date')
       .lean(),
     FeedApplication.find()
       .sort({ createdAt: -1 })
-      .limit(5)
+      .limit(limit)
       .select('recipeName penName totalCost date')
       .lean()
   ]);
@@ -220,5 +242,6 @@ const getRecentActivities = async (userId, limit = 10) => {
 
 module.exports = {
   getStats,
-  getRecentActivities
+  getRecentActivities,
+  invalidateDashboardCache: () => invalidateCache('stats_') // exported for other services to call
 };

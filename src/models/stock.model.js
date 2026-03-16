@@ -106,8 +106,6 @@ const stockSchema = new mongoose.Schema(
   },
   {
     timestamps: true,
-    toJSON: { virtuals: true },
-    toObject: { virtuals: true }
   }
 );
 
@@ -136,31 +134,33 @@ stockSchema.virtual('isExpired').get(function () {
 
 // Pre-save middleware to calculate quantities and stock amount
 stockSchema.pre('save', function (next) {
-  const hasPackQuantity = this.packQuantity !== undefined && this.packQuantity !== null;
-  const hasUnitSize = this.unitSize !== undefined && this.unitSize !== null;
+  const hasPackQuantity = this.packQuantity != null;
+  const hasUnitSize = this.unitSize != null;
 
   if (hasPackQuantity && hasUnitSize) {
     this.totalQuantity = this.packQuantity * this.unitSize;
   }
 
-  if (this.totalPrice !== undefined && this.totalPrice !== null && this.totalQuantity) {
+  if (this.totalPrice != null && this.totalQuantity) {
     this.costPerUnit = this.totalPrice / this.totalQuantity;
   }
 
-  if (this.totalQuantity !== undefined && this.totalQuantity !== null &&
-      this.costPerUnit !== undefined && this.costPerUnit !== null) {
-    this.openingStockQty = this.totalQuantity;
-    this.openingRatePerUnit = this.costPerUnit;
-    this.openingStockAmount = this.totalPrice ?? (this.totalQuantity * this.costPerUnit);
-  } else if (this.isModified('openingStockQty') || this.isModified('openingRatePerUnit')) {
-    this.openingStockAmount = this.openingStockQty * this.openingRatePerUnit;
+  // Only set opening values and currentQty on NEW documents
+  if (this.isNew) {
+    if (this.totalQuantity != null && this.costPerUnit != null) {
+      this.openingStockQty = this.totalQuantity;
+      this.openingRatePerUnit = this.costPerUnit;
+      this.openingStockAmount = this.totalPrice ?? (this.totalQuantity * this.costPerUnit);
+    } else if (this.isModified('openingStockQty') || this.isModified('openingRatePerUnit')) {
+      this.openingStockAmount = this.openingStockQty * this.openingRatePerUnit;
+    }
+
+    // Only set currentQty if not explicitly provided
+    if (this.currentQty == null) {
+      this.currentQty = this.openingStockQty;
+    }
   }
-  
-  // Set current qty to opening qty if new
-  if (this.isNew && !this.currentQty) {
-    this.currentQty = this.openingStockQty;
-  }
-  
+
   next();
 });
 

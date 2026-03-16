@@ -1,4 +1,5 @@
 const { Advance, Employee } = require('../models');
+const logger = require('../utils/logger');
 const { ApiError, getPaginationOptions, getSortOptions, getPaginationMeta } = require('../utils');
 
 /**
@@ -71,23 +72,53 @@ const create = async (advanceData, userId) => {
     createdBy: userId
   });
 
+  // Update employee balance in service layer (after advance is created)
+  try {
+    if (advanceData.type === 'Given') {
+      employee.advanceBalance += advanceData.amount;
+    } else {
+      employee.advanceBalance -= advanceData.amount;
+    }
+    advance.balanceAfter = employee.advanceBalance;
+    await employee.save();
+    await advance.save();
+  } catch (err) {
+    // If balance update fails, still return the advance
+    logger.error('Failed to update employee balance:', err.message || err);
+  }
+
   // Populate for response (include dateOfJoining so tenureMonths virtual can compute)
   await advance.populate('employee', 'name cnic department advanceBalance dateOfJoining');
 
   return advance;
 };
 
-/**
- * Delete advance record
- * Note: This doesn't reverse the balance change - just removes the record
- */
 const remove = async (id) => {
-  const advance = await Advance.findByIdAndDelete(id);
+  const advance = await Advance.findById(id);
 
   if (!advance) {
     throw ApiError.notFound('Advance record not found');
   }
 
+  // Reverse employee advance balance before deleting (P1-11 / F-26)
+  try {
+    const employee = await Employee.findById(advance.employee);
+    if (employee) {
+      if (advance.type === 'Given') {
+        // Advance was given earlier, so subtract it now to reverse
+        employee.advanceBalance = Math.max(0, (employee.advanceBalance || 0) - advance.amount);
+      } else {
+        // Advance was returned earlier, so add it back to reverse
+        employee.advanceBalance = (employee.advanceBalance || 0) + advance.amount;
+      }
+      await employee.save();
+    }
+  } catch (err) {
+    // Log error but continue with deletion
+    logger.error('Failed to reverse employee advance balance:', err.message || err);
+  }
+
+  await Advance.findByIdAndDelete(id);
   return advance;
 };
 

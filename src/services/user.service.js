@@ -62,7 +62,7 @@ const createUser = async (userData) => {
  * Get all users (Admin-only). Excludes password; populates employee name when linked.
  */
 const getUsers = async () => {
-  const users = await User.find({ isActive: { $ne: false } })
+  const users = await User.find({ isActive: true })
     .select('-password')
     .populate('employee', 'name designation')
     .sort({ createdAt: -1 })
@@ -90,9 +90,24 @@ const resetPassword = async (userId, newPassword) => {
   return true;
 };
 
+/**
+ * Reactivate a previously deactivated user (P4-04 / F-65)
+ * Admin-only. Re-enables login for the account.
+ */
+const activateUser = async (userId) => {
+  const user = await User.findByIdAndUpdate(
+    userId,
+    { isActive: true },
+    { new: true }
+  ).select('-password');
+  if (!user) throw ApiError.notFound('User not found');
+  return user;
+};
+
 module.exports = {
   createUser,
   getUsers,
-  resetPassword
+  resetPassword,
+  activateUser
 };
 

@@ -68,14 +68,12 @@ const salaryPaymentSchema = new mongoose.Schema(
     }
   },
   {
-    timestamps: true,
-    toJSON: { virtuals: true },
-    toObject: { virtuals: true }
+    timestamps: true
   }
 );
 
 // Indexes
-salaryPaymentSchema.index({ employee: 1, year: 1, month: 1 });
+salaryPaymentSchema.index({ employee: 1, year: 1, month: 1 }, { unique: true });
 salaryPaymentSchema.index({ paymentDate: -1 });
 
 const SalaryPayment = mongoose.model('SalaryPayment', salaryPaymentSchema);

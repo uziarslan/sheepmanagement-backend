@@ -1,7 +1,5 @@
-const SalaryPayment = require('../models/salaryPayment.model');
-const Employee = require('../models/employee.model');
-const Capital = require('../models/capital.model');
-const Animal = require('../models/animal.model');
+const logger = require('../utils/logger');
+const { SalaryPayment, Employee, Capital, Animal } = require('../models');
 
 const createSalaryPayment = async (data, userId) => {
   const { employee: employeeId, month, year, paymentDate, paymentMode, advanceDeduction = 0, otherDeductions = 0, notes } = data;
@@ -9,6 +7,16 @@ const createSalaryPayment = async (data, userId) => {
   const employee = await Employee.findById(employeeId);
   if (!employee) {
     throw new Error('Employee not found');
+  }
+
+  // Check if salary payment already exists for this employee/month/year
+  const existingPayment = await SalaryPayment.findOne({
+    employee: employeeId,
+    month,
+    year
+  });
+  if (existingPayment) {
+    throw new Error(`Salary payment for ${employee.name} already exists for ${month}/${year}`);
   }
 
   // Compute salary components from employee master data
@@ -62,22 +70,37 @@ const createSalaryPayment = async (data, userId) => {
   } catch (err) {
     // Do not fail the salary payment if capital logging fails; just log error
     // eslint-disable-next-line no-console
-    console.error('Failed to record capital transaction for salary:', err.message || err);
+    logger.error('Failed to record capital transaction for salary:', err.message || err);
   }
 
   // Distribute salary cost among all active animals
   try {
     const activeAnimalCount = await Animal.countDocuments({ status: 'Active' });
     if (activeAnimalCount > 0) {
-      const costPerAnimal = netSalary / activeAnimalCount;
+      // Use Math.floor for precise rounding: divide first, then round down to 2 decimals
+      const costPerAnimal = Math.floor((netSalary / activeAnimalCount) * 100) / 100;
+      const remainder = Math.round((netSalary - (costPerAnimal * activeAnimalCount)) * 100) / 100;
+
+      // Add costPerAnimal to all animals
       await Animal.updateMany(
         { status: 'Active' },
         { $inc: { totalSalaryCost: costPerAnimal } }
       );
+
+      // Add remainder to first animal
+      if (remainder > 0) {
+        const firstAnimal = await Animal.findOne({ status: 'Active' });
+        if (firstAnimal) {
+          await Animal.findByIdAndUpdate(
+            firstAnimal._id,
+            { $inc: { totalSalaryCost: remainder } }
+          );
+        }
+      }
     }
   } catch (err) {
     // eslint-disable-next-line no-console
-    console.error('Failed to distribute salary cost to animals:', err.message || err);
+    logger.error('Failed to distribute salary cost to animals:', err.message || err);
   }
 
   return salaryPayment;

@@ -70,8 +70,6 @@ const vaccinationSchema = new mongoose.Schema(
   },
   {
     timestamps: true,
-    toJSON: { virtuals: true },
-    toObject: { virtuals: true }
   }
 );
 
@@ -113,28 +111,53 @@ vaccinationSchema.pre('save', async function (next) {
         // Pen/Shed scope - divide among active animals in pen
         const activeAnimals = await Animal.find({ pen: this.pen, status: 'Active' });
         if (activeAnimals.length > 0) {
-          const costPerAnimal = this.totalCost / activeAnimals.length;
+          const perAnimalBase = Math.floor(this.totalCost * 100 / activeAnimals.length) / 100;
+          const remainder = Number((this.totalCost - perAnimalBase * activeAnimals.length).toFixed(2));
+          // Apply base to all
           await Animal.updateMany(
             { pen: this.pen, status: 'Active' },
-            { $inc: { totalVaccinationCost: costPerAnimal } }
+            { $inc: { totalVaccinationCost: perAnimalBase } }
           );
+          // Apply remainder to first animal
+          if (remainder > 0 && activeAnimals.length > 0) {
+            await Animal.findByIdAndUpdate(activeAnimals[0]._id, {
+              $inc: { totalVaccinationCost: remainder }
+            });
+          }
         }
       } else if (this.scope === 'Multiple' && this.animals && this.animals.length > 0) {
         // Multiple animals - divide among selected animals
-        const costPerAnimal = this.totalCost / this.animals.length;
+        const perAnimalBase = Math.floor(this.totalCost * 100 / this.animals.length) / 100;
+        const remainder = Number((this.totalCost - perAnimalBase * this.animals.length).toFixed(2));
+        // Apply base to all
         await Animal.updateMany(
           { _id: { $in: this.animals }, status: 'Active' },
-          { $inc: { totalVaccinationCost: costPerAnimal } }
+          { $inc: { totalVaccinationCost: perAnimalBase } }
         );
+        // Apply remainder to first animal
+        if (remainder > 0 && this.animals.length > 0) {
+          await Animal.findByIdAndUpdate(this.animals[0], {
+            $inc: { totalVaccinationCost: remainder }
+          });
+        }
       } else if (this.scope === 'All Animals') {
         // All animals scope - divide among all active animals
         const activeAnimalCount = await Animal.countDocuments({ status: 'Active' });
         if (activeAnimalCount > 0) {
-          const costPerAnimal = this.totalCost / activeAnimalCount;
+          const perAnimalBase = Math.floor(this.totalCost * 100 / activeAnimalCount) / 100;
+          const remainder = Number((this.totalCost - perAnimalBase * activeAnimalCount).toFixed(2));
+          // Apply base to all
           await Animal.updateMany(
             { status: 'Active' },
-            { $inc: { totalVaccinationCost: costPerAnimal } }
+            { $inc: { totalVaccinationCost: perAnimalBase } }
           );
+          // Apply remainder to first animal
+          if (remainder > 0) {
+            const firstAnimal = await Animal.findOne({ status: 'Active' });
+            if (firstAnimal) {
+              await firstAnimal.updateOne({ $inc: { totalVaccinationCost: remainder } });
+            }
+          }
         }
       }
     }

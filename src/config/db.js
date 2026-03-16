@@ -3,17 +3,22 @@ const env = require('./env');
 const logger = require('../utils/logger');
 
 // Global plugin to transform _id to id in JSON
-mongoose.plugin((schema) => {
+mongoose.plugin((schema, options) => {
   schema.set('toJSON', {
     virtuals: true,
     versionKey: false,
     transform: (doc, ret) => {
       ret.id = ret._id;
       delete ret._id;
+      // Remove sensitive fields from User model
+      if (doc.constructor.modelName === 'User') {
+        delete ret.password;
+        delete ret.refreshToken;
+      }
       return ret;
     }
   });
-  
+
   schema.set('toObject', {
     virtuals: true,
     versionKey: false,

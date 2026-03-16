@@ -72,8 +72,6 @@ const dewormingSchema = new mongoose.Schema(
   },
   {
     timestamps: true,
-    toJSON: { virtuals: true },
-    toObject: { virtuals: true }
   }
 );
 
@@ -84,47 +82,13 @@ dewormingSchema.index({ pen: 1 });
 dewormingSchema.index({ animal: 1 });
 dewormingSchema.index({ dewormingType: 1 });
 
-// Pre-save middleware to deduct stock
-dewormingSchema.pre('save', async function (next) {
+// Pre-save middleware to calculate total cost
+dewormingSchema.pre('save', function (next) {
+  // Calculate total cost
   if (this.isNew && this.medicines && this.medicines.length > 0) {
-    const Stock = mongoose.model('Stock');
-    
-    for (const med of this.medicines) {
-      const stock = await Stock.findById(med.medicine);
-      if (stock) {
-        if (stock.currentQty < med.quantity) {
-          return next(new Error(`Insufficient stock for ${stock.productName}`));
-        }
-        stock.currentQty -= med.quantity;
-        await stock.save();
-      }
-    }
-    
-    // Calculate total cost
     this.totalCost = this.medicines.reduce((sum, med) => sum + (med.total || 0), 0);
-
-    // Distribute deworming cost to animals
-    if (this.totalCost > 0) {
-      const Animal = mongoose.model('Animal');
-
-      if (this.scope === 'Individual Animal' && this.animal) {
-        // Individual animal - full cost to one animal
-        await Animal.findByIdAndUpdate(this.animal, {
-          $inc: { totalDewormingCost: this.totalCost }
-        });
-      } else if (this.scope === 'Shed' && this.pen) {
-        // Shed scope - divide among active animals in pen
-        const activeAnimals = await Animal.find({ pen: this.pen, status: 'Active' });
-        if (activeAnimals.length > 0) {
-          const costPerAnimal = this.totalCost / activeAnimals.length;
-          await Animal.updateMany(
-            { pen: this.pen, status: 'Active' },
-            { $inc: { totalDewormingCost: costPerAnimal } }
-          );
-        }
-      }
-    }
   }
+
   next();
 });
 

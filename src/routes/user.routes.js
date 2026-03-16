@@ -25,5 +25,8 @@ router.patch(
   userController.resetPassword
 );
 
+// PATCH /api/users/:id/activate - Reactivate a deactivated user (P4-04 / F-65)
+router.patch('/:id/activate', userController.activateUser);
+
 module.exports = router;
 

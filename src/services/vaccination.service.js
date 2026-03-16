@@ -1,4 +1,5 @@
 const { Stock, VaccineRecipe, VaccineApplication, Animal, Pen } = require('../models');
+const logger = require('../utils/logger');
 const { ApiError, getPaginationOptions, getSortOptions, getPaginationMeta, logAction } = require('../utils');
 
 // ============ VACCINE RECIPE SERVICES ============
@@ -331,14 +332,21 @@ const applyVaccine = async (data, userId) => {
   vaccineRecipe.appliedCount += 1;
   await vaccineRecipe.save();
 
-  // Distribute vaccination cost to animals
+  // Distribute vaccination cost to animals with proper rounding
   if (totalCost > 0 && animalCount > 0) {
-    const costPerAnimal = totalCost / animalCount;
+    const costPerAnimal = Math.floor((totalCost / animalCount) * 100) / 100;
+    const remainder = Math.round((totalCost - (costPerAnimal * animalCount)) * 100) / 100;
     const animalIds = targetAnimals.map(a => a._id);
     await Animal.updateMany(
       { _id: { $in: animalIds }, status: 'Active' },
       { $inc: { totalVaccinationCost: costPerAnimal } }
     );
+    // Add remainder to first animal
+    if (remainder > 0 && animalIds.length > 0) {
+      await Animal.findByIdAndUpdate(animalIds[0], {
+        $inc: { totalVaccinationCost: remainder }
+      });
+    }
   }
 
   // Create audit log
@@ -392,6 +400,42 @@ const deleteApplication = async (id, userId) => {
       medicine.currentQty += med.quantity;
       await medicine.save();
     }
+  }
+
+  // Reverse vaccination cost from animals
+  try {
+    if (application.totalCost > 0) {
+      if (application.scope === 'All Animals') {
+        // Reverse cost from all active animals
+        const activeAnimals = await Animal.find({ status: 'Active' });
+        if (activeAnimals.length > 0) {
+          const costPerAnimal = application.totalCost / activeAnimals.length;
+          await Animal.updateMany(
+            { status: 'Active' },
+            { $inc: { totalVaccinationCost: -costPerAnimal } }
+          );
+        }
+      } else if (application.scope === 'Pen' && application.pen) {
+        // Reverse cost from pen animals
+        const penAnimals = await Animal.find({ pen: application.pen, status: 'Active' });
+        if (penAnimals.length > 0) {
+          const costPerAnimal = application.totalCost / penAnimals.length;
+          await Animal.updateMany(
+            { pen: application.pen, status: 'Active' },
+            { $inc: { totalVaccinationCost: -costPerAnimal } }
+          );
+        }
+      } else if (application.scope === 'Individual Animal' && application.animal) {
+        // Reverse full cost from one animal
+        await Animal.findByIdAndUpdate(
+          application.animal,
+          { $inc: { totalVaccinationCost: -application.totalCost } }
+        );
+      }
+    }
+  } catch (err) {
+    // Log error but continue with deletion
+    logger.error('Failed to reverse vaccination cost from animals:', err.message || err);
   }
 
   // Update vaccine recipe applied count

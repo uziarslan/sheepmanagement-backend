@@ -90,6 +90,18 @@ const applyRecipe = asyncHandler(async (req, res) => {
   );
 });
 
+/**
+ * Apply recipe over a date range (P3-09 / F-57)
+ * POST /api/feed/applications/range
+ */
+const applyRecipeRange = asyncHandler(async (req, res) => {
+  const result = await feedService.applyRecipeRange(req.body, req.user.id);
+
+  res.status(HTTP_STATUS.OK).json(
+    successResponse(result, `Recipe applied for ${result.succeeded.length} day(s)`)
+  );
+});
+
 module.exports = {
   // Recipes
   getAllRecipes,
@@ -99,5 +111,6 @@ module.exports = {
   deleteRecipe,
   // Applications
   getApplications,
-  applyRecipe
+  applyRecipe,
+  applyRecipeRange
 };

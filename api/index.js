@@ -23,6 +23,12 @@ const connectToDatabase = async () => {
     await mongoose.connect(env.mongodbUri, options);
     isConnected = true;
     logger.info('Database connected successfully');
+
+    // Reset isConnected flag when connection is closed
+    mongoose.connection.on('disconnected', () => {
+      isConnected = false;
+      logger.info('Database disconnected');
+    });
   } catch (error) {
     logger.error('Database connection failed:', error.message);
     isConnected = false;

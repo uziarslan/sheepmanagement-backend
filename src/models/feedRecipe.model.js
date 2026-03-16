@@ -64,8 +64,6 @@ const feedRecipeSchema = new mongoose.Schema(
   },
   {
     timestamps: true,
-    toJSON: { virtuals: true },
-    toObject: { virtuals: true }
   }
 );
 
@@ -76,6 +74,10 @@ feedRecipeSchema.index({ isActive: 1 });
 
 // Pre-save middleware to calculate totals
 feedRecipeSchema.pre('save', function (next) {
+  // Reset totals to 0 before recalculating
+  this.totalQuantity = 0;
+  this.totalCost = 0;
+
   if (this.ingredients && this.ingredients.length > 0) {
     this.totalQuantity = this.ingredients.reduce((sum, ing) => sum + ing.quantity, 0);
     this.totalCost = this.ingredients.reduce((sum, ing) => sum + (ing.total || 0), 0);

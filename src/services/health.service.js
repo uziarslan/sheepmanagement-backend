@@ -83,7 +83,80 @@ const createVaccination = async (data, userId) => {
 const deleteVaccination = async (id, userId) => {
   const vaccination = await Vaccination.findByIdAndDelete(id);
   if (!vaccination) throw ApiError.notFound('Vaccination record not found');
-  
+
+  // Restore stock quantities
+  if (vaccination.medicines && vaccination.medicines.length > 0) {
+    for (const med of vaccination.medicines) {
+      const stock = await Stock.findById(med.medicine);
+      if (stock) {
+        stock.currentQty += med.quantity;
+        await stock.save();
+      }
+    }
+  }
+
+  // Reverse vaccination cost from animals
+  if (vaccination.totalCost > 0) {
+    if ((vaccination.scope === 'Individual' || vaccination.scope === 'Individual Animal') && vaccination.animal) {
+      // Individual animal - reverse full cost
+      await Animal.findByIdAndUpdate(vaccination.animal, {
+        $inc: { totalVaccinationCost: -vaccination.totalCost }
+      });
+    } else if ((vaccination.scope === 'Pen' || vaccination.scope === 'Shed') && vaccination.pen) {
+      // Pen/Shed scope - reverse distributed cost
+      const activeAnimals = await Animal.find({ pen: vaccination.pen, status: 'Active' });
+      if (activeAnimals.length > 0) {
+        const perAnimalBase = Math.floor((vaccination.totalCost * 100 / activeAnimals.length)) / 100;
+        const remainder = Number((vaccination.totalCost - perAnimalBase * activeAnimals.length).toFixed(2));
+        // Reverse base from all
+        await Animal.updateMany(
+          { pen: vaccination.pen, status: 'Active' },
+          { $inc: { totalVaccinationCost: -perAnimalBase } }
+        );
+        // Reverse remainder from first animal
+        if (remainder > 0 && activeAnimals.length > 0) {
+          await Animal.findByIdAndUpdate(activeAnimals[0]._id, {
+            $inc: { totalVaccinationCost: -remainder }
+          });
+        }
+      }
+    } else if (vaccination.scope === 'Multiple' && vaccination.animals && vaccination.animals.length > 0) {
+      // Multiple animals - reverse distributed cost
+      const perAnimalBase = Math.floor((vaccination.totalCost * 100 / vaccination.animals.length)) / 100;
+      const remainder = Number((vaccination.totalCost - perAnimalBase * vaccination.animals.length).toFixed(2));
+      // Reverse base from all
+      await Animal.updateMany(
+        { _id: { $in: vaccination.animals }, status: 'Active' },
+        { $inc: { totalVaccinationCost: -perAnimalBase } }
+      );
+      // Reverse remainder from first animal
+      if (remainder > 0 && vaccination.animals.length > 0) {
+        await Animal.findByIdAndUpdate(vaccination.animals[0], {
+          $inc: { totalVaccinationCost: -remainder }
+        });
+      }
+    } else if (vaccination.scope === 'All Animals') {
+      // All animals scope - reverse distributed cost
+      const activeAnimalCount = await Animal.countDocuments({ status: 'Active' });
+      if (activeAnimalCount > 0) {
+        const perAnimalBase = Math.floor((vaccination.totalCost * 100 / activeAnimalCount)) / 100;
+        const remainder = Number((vaccination.totalCost - perAnimalBase * activeAnimalCount).toFixed(2));
+        // Reverse base from all
+        await Animal.updateMany(
+          { status: 'Active' },
+          { $inc: { totalVaccinationCost: -perAnimalBase } }
+        );
+        // Reverse remainder from first animal
+        if (remainder > 0) {
+          const firstAnimal = await Animal.findOne({ status: 'Active' });
+          if (firstAnimal) {
+            await firstAnimal.updateOne({ $inc: { totalVaccinationCost: -remainder } });
+          }
+        }
+      }
+    }
+  }
+
   // Create audit log
   logAction({
     userId,
@@ -96,7 +169,7 @@ const deleteVaccination = async (id, userId) => {
       animalCount: vaccination.animalCount
     }
   });
-  
+
   return vaccination;
 };
 
@@ -148,6 +221,25 @@ const createTreatment = async (data, userId) => {
     createdBy: userId
   });
 
+  // Deduct stock and update animal health cost after treatment is saved
+  if (treatment.medicines && treatment.medicines.length > 0) {
+    for (const med of treatment.medicines) {
+      const stock = await Stock.findById(med.medicine);
+      if (stock) {
+        if (stock.currentQty < med.quantity) {
+          throw ApiError.badRequest(`Insufficient stock for ${stock.productName}`);
+        }
+        stock.currentQty -= med.quantity;
+        await stock.save();
+      }
+    }
+
+    // Update animal health cost
+    await Animal.findByIdAndUpdate(treatment.animal, {
+      $inc: { totalHealthCost: treatment.totalAmount }
+    });
+  }
+
   // Create audit log
   logAction({
     userId,
@@ -195,7 +287,25 @@ const updateTreatment = async (id, data, userId) => {
 const deleteTreatment = async (id, userId) => {
   const treatment = await Treatment.findByIdAndDelete(id);
   if (!treatment) throw ApiError.notFound('Treatment record not found');
-  
+
+  // Restore stock quantities
+  if (treatment.medicines && treatment.medicines.length > 0) {
+    for (const med of treatment.medicines) {
+      const stock = await Stock.findById(med.medicine);
+      if (stock) {
+        stock.currentQty += med.quantity;
+        await stock.save();
+      }
+    }
+  }
+
+  // Reverse animal health cost
+  if (treatment.totalAmount > 0) {
+    await Animal.findByIdAndUpdate(treatment.animal, {
+      $inc: { totalHealthCost: -treatment.totalAmount }
+    });
+  }
+
   // Create audit log
   logAction({
     userId,
@@ -208,7 +318,7 @@ const deleteTreatment = async (id, userId) => {
       cureStatus: treatment.cureStatus
     }
   });
-  
+
   return treatment;
 };
 
@@ -248,9 +358,9 @@ const getDewormings = async (query) => {
 
 const createDeworming = async (data, userId) => {
   // Calculate animal count based on scope
-  if (data.scope === 'Shed' && data.pen) {
+  if (data.scope === 'Pen' && data.pen) {
     data.animalCount = await Animal.countDocuments({ pen: data.pen, status: 'Active' });
-  } else if (data.scope === 'Individual Animal' && data.animal) {
+  } else if (data.scope === 'Individual' && data.animal) {
     data.animalCount = 1;
     const animal = await Animal.findById(data.animal);
     if (animal) data.animalTagId = animal.tagId;
@@ -260,6 +370,40 @@ const createDeworming = async (data, userId) => {
     ...data,
     createdBy: userId
   });
+
+  // Deduct stock and update animal deworming cost after deworming is saved
+  if (deworming.medicines && deworming.medicines.length > 0) {
+    for (const med of deworming.medicines) {
+      const stock = await Stock.findById(med.medicine);
+      if (stock) {
+        if (stock.currentQty < med.quantity) {
+          throw ApiError.badRequest(`Insufficient stock for ${stock.productName}`);
+        }
+        stock.currentQty -= med.quantity;
+        await stock.save();
+      }
+    }
+
+    // Distribute deworming cost to animals
+    if (deworming.totalCost > 0) {
+      if (deworming.scope === 'Individual' && deworming.animal) {
+        // Individual animal - full cost to one animal
+        await Animal.findByIdAndUpdate(deworming.animal, {
+          $inc: { totalDewormingCost: deworming.totalCost }
+        });
+      } else if (deworming.scope === 'Pen' && deworming.pen) {
+        // Pen scope - divide among active animals in pen
+        const activeAnimals = await Animal.find({ pen: deworming.pen, status: 'Active' });
+        if (activeAnimals.length > 0) {
+          const costPerAnimal = deworming.totalCost / activeAnimals.length;
+          await Animal.updateMany(
+            { pen: deworming.pen, status: 'Active' },
+            { $inc: { totalDewormingCost: costPerAnimal } }
+          );
+        }
+      }
+    }
+  }
 
   // Create audit log
   logAction({
@@ -281,7 +425,38 @@ const createDeworming = async (data, userId) => {
 const deleteDeworming = async (id, userId) => {
   const deworming = await Deworming.findByIdAndDelete(id);
   if (!deworming) throw ApiError.notFound('Deworming record not found');
-  
+
+  // Restore stock quantities
+  if (deworming.medicines && deworming.medicines.length > 0) {
+    for (const med of deworming.medicines) {
+      const stock = await Stock.findById(med.medicine);
+      if (stock) {
+        stock.currentQty += med.quantity;
+        await stock.save();
+      }
+    }
+  }
+
+  // Reverse animal deworming cost
+  if (deworming.totalCost > 0) {
+    if (deworming.scope === 'Individual' && deworming.animal) {
+      // Individual animal - reverse full cost
+      await Animal.findByIdAndUpdate(deworming.animal, {
+        $inc: { totalDewormingCost: -deworming.totalCost }
+      });
+    } else if (deworming.scope === 'Pen' && deworming.pen) {
+      // Pen scope - reverse distributed cost
+      const activeAnimals = await Animal.find({ pen: deworming.pen, status: 'Active' });
+      if (activeAnimals.length > 0) {
+        const costPerAnimal = deworming.totalCost / activeAnimals.length;
+        await Animal.updateMany(
+          { pen: deworming.pen, status: 'Active' },
+          { $inc: { totalDewormingCost: -costPerAnimal } }
+        );
+      }
+    }
+  }
+
   // Create audit log
   logAction({
     userId,
@@ -294,7 +469,7 @@ const deleteDeworming = async (id, userId) => {
       animalCount: deworming.animalCount
     }
   });
-  
+
   return deworming;
 };
 

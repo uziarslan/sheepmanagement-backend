@@ -1,4 +1,5 @@
 const { Liability, Capital } = require('../models');
+const logger = require('../utils/logger');
 const { ApiError, getPaginationOptions, getSortOptions, getPaginationMeta, logAction } = require('../utils');
 
 /**
@@ -115,7 +116,7 @@ const create = async (liabilityData, userId) => {
       await capital.addTransaction(amount, txType, desc, liability._id, userId);
     }
   } catch (error) {
-    console.error('Failed to update capital for liability:', error);
+    logger.error('Failed to update capital for liability:', error);
     await Liability.findByIdAndDelete(liability._id);
     throw ApiError.internal('Failed to record capital. Please try again.');
   }
@@ -143,6 +144,18 @@ const remove = async (id, userId) => {
   if (!liability) {
     throw ApiError.notFound('Liability record not found');
   }
+
+  // Reverse the capital transaction before deleting
+  try {
+    const capital = await Capital.getOrCreate(userId);
+    // Reverse the original transaction by adding back the liability amount
+    const description = `Liability reversal - ${liability.type} (${liability.description || ''})`;
+    await capital.addTransaction(liability.amount, 'Liability Reversal', description, String(liability._id), userId);
+  } catch (err) {
+    // Log error but continue with deletion
+    logger.error('Failed to reverse capital transaction for liability:', err.message || err);
+  }
+
   await Liability.findByIdAndDelete(id);
   return liability;
 };

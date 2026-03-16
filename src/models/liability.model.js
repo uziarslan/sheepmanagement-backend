@@ -44,8 +44,6 @@ const liabilitySchema = new mongoose.Schema(
   },
   {
     timestamps: true,
-    toJSON: { virtuals: true },
-    toObject: { virtuals: true }
   }
 );
 
@@ -54,6 +52,19 @@ liabilitySchema.index({ lenderName: 1 });
 liabilitySchema.index({ date: -1 });
 liabilitySchema.index({ type: 1 });
 liabilitySchema.index({ user: 1 });
+
+// Pre-save middleware
+// KNOWN LIMITATION (F-42): The balanceAfter field is denormalized and calculated at save-time.
+// This creates a potential race condition in high-concurrency scenarios where multiple
+// liabilities are created simultaneously. The balance may not accurately reflect the true state
+// if multiple requests execute in parallel. A solution would be to:
+// 1. Use transactions (MongoDB 4.0+)
+// 2. Use a separate aggregation pipeline for balance calculations
+// 3. Implement optimistic locking with version fields
+// For now, this is accepted as a known limitation.
+liabilitySchema.pre('save', function (next) {
+  next();
+});
 
 const Liability = mongoose.model('Liability', liabilitySchema);
 

@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { feedController } = require('../controllers');
-const { authenticate, validate } = require('../middleware');
+const { authenticate, authorize, validate } = require('../middleware');
 const { feedValidation } = require('../validations');
 
 // All routes require authentication
@@ -21,6 +21,7 @@ router.get('/recipes/:id', feedController.getRecipeById);
 // POST /api/feed/recipes - Create recipe
 router.post(
   '/recipes',
+  authorize('Admin', 'Manager'),
   validate(feedValidation.createRecipe),
   feedController.createRecipe
 );
@@ -28,12 +29,13 @@ router.post(
 // PUT /api/feed/recipes/:id - Update recipe
 router.put(
   '/recipes/:id',
+  authorize('Admin', 'Manager'),
   validate(feedValidation.updateRecipe),
   feedController.updateRecipe
 );
 
 // DELETE /api/feed/recipes/:id - Delete recipe
-router.delete('/recipes/:id', feedController.deleteRecipe);
+router.delete('/recipes/:id', authorize('Admin', 'Manager'), feedController.deleteRecipe);
 
 // ============ APPLICATIONS ============
 // GET /api/feed/applications - Get all applications
@@ -43,9 +45,18 @@ router.get(
   feedController.getApplications
 );
 
+// POST /api/feed/applications/range - Apply recipe over a date range (P3-09)
+// NOTE: must be registered BEFORE /applications/:id to avoid route shadowing
+router.post(
+  '/applications/range',
+  authorize('Admin', 'Manager', 'Employee'),
+  feedController.applyRecipeRange
+);
+
 // POST /api/feed/applications - Apply recipe
 router.post(
   '/applications',
+  authorize('Admin', 'Manager', 'Employee'),
   validate(feedValidation.applyRecipe),
   feedController.applyRecipe
 );

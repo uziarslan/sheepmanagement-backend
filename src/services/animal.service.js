@@ -1,4 +1,5 @@
 const { Animal, Pen, Capital } = require('../models');
+const logger = require('../utils/logger');
 const { ApiError, getPaginationOptions, getSortOptions, getPaginationMeta, logAction } = require('../utils');
 
 /**
@@ -73,11 +74,16 @@ const create = async (animalData, userId) => {
     }
   }
 
-  // Validate pen exists
+  // Validate pen exists and has capacity
   if (animalData.pen) {
     const pen = await Pen.findById(animalData.pen);
     if (!pen) {
       throw ApiError.notFound('Pen not found');
+    }
+    // Check pen capacity
+    const currentAnimalCount = await Animal.countDocuments({ pen: animalData.pen, status: 'Active' });
+    if (currentAnimalCount >= pen.capacity) {
+      throw ApiError.badRequest(`Pen "${pen.name}" has reached its maximum capacity of ${pen.capacity} animals`);
     }
   }
 
@@ -108,7 +114,7 @@ const create = async (animalData, userId) => {
     }
   } catch (error) {
     // Log error but don't fail the request
-    console.error('Failed to update capital for animal purchase:', error);
+    logger.error('Failed to update capital for animal purchase:', error);
   }
 
   // Create audit log
@@ -138,6 +144,35 @@ const bulkCreate = async (animalsData, userId) => {
   };
 
   let totalInvestment = 0;
+
+  // Pre-check pen capacity for all animals
+  const penCapacityMap = {};
+  for (const animalData of animalsData) {
+    if (animalData.pen) {
+      const pen = await Pen.findById(animalData.pen);
+      if (pen) {
+        const penId = String(pen._id);
+        if (!penCapacityMap[penId]) {
+          const currentCount = await Animal.countDocuments({ pen: animalData.pen, status: 'Active' });
+          penCapacityMap[penId] = {
+            capacity: pen.capacity,
+            current: currentCount,
+            name: pen.name
+          };
+        }
+        penCapacityMap[penId].requestedCount = (penCapacityMap[penId].requestedCount || 0) + 1;
+      }
+    }
+  }
+
+  // Check if any pen will exceed capacity
+  for (const [penId, info] of Object.entries(penCapacityMap)) {
+    if (info.current + info.requestedCount > info.capacity) {
+      throw ApiError.badRequest(
+        `Pen "${info.name}" would exceed capacity. Current: ${info.current}, Requested: ${info.requestedCount}, Capacity: ${info.capacity}`
+      );
+    }
+  }
 
   for (const animalData of animalsData) {
     try {
@@ -198,7 +233,7 @@ const bulkCreate = async (animalsData, userId) => {
       }
     } catch (error) {
       // Log error but don't fail the request
-      console.error('Failed to update capital for bulk animal purchase:', error);
+      logger.error('Failed to update capital for bulk animal purchase:', error);
     }
   }
 
@@ -258,11 +293,35 @@ const update = async (id, updateData, userId) => {
  * Delete animal
  */
 const remove = async (id, userId) => {
-  const animal = await Animal.findByIdAndDelete(id);
+  const animal = await Animal.findById(id);
 
   if (!animal) {
     throw ApiError.notFound('Animal not found');
   }
+
+  // Reverse capital transaction if animal was not sold
+  try {
+    if (animal.status !== 'Sold') {
+      // Calculate total cost including expenses
+      const totalCost = (animal.purchasePrice || 0) +
+        (animal.purchaseTransport || 0) +
+        (animal.purchaseMandiExpenses || 0) +
+        (animal.purchaseFuel || 0) +
+        (animal.purchaseFood || 0) +
+        (animal.purchaseHotel || 0);
+
+      if (totalCost > 0) {
+        const capital = await Capital.getOrCreate(userId);
+        const description = `Animal deletion reversal - ${animal.tagId} (${animal.name})`;
+        await capital.addTransaction(totalCost, 'Animal Deletion Reversal', description, String(animal._id), userId);
+      }
+    }
+  } catch (err) {
+    // Log error but continue with deletion
+    logger.error('Failed to reverse capital transaction for animal:', err.message || err);
+  }
+
+  await Animal.findByIdAndDelete(id);
 
   // Create audit log
   logAction({
@@ -374,7 +433,7 @@ const declareDead = async (id, deathData, userId) => {
         userId
       );
     } catch (err) {
-      console.error('Failed to record capital loss for dead animal:', err.message || err);
+      logger.error('Failed to record capital loss for dead animal:', err.message || err);
     }
   }
 
@@ -444,7 +503,7 @@ const markAsSold = async (id, saleData, userId) => {
         sellingCost
       );
     } catch (err) {
-      console.error('Failed to record capital for animal sale:', err.message || err);
+      logger.error('Failed to record capital for animal sale:', err.message || err);
     }
   }
 
@@ -482,6 +541,12 @@ const bulkMarkAsSold = async (animalsData, userId) => {
     success: [],
     failed: []
   };
+
+  // Aggregate totals for capital transaction
+  let aggregatedTotalCost = 0;
+  let aggregatedSellingPrice = 0;
+  let aggregatedSellingCost = 0;
+  const successfulAnimals = [];
 
   for (const saleItem of animalsData) {
     try {
@@ -525,21 +590,18 @@ const bulkMarkAsSold = async (animalsData, userId) => {
       animal.soldCost = sellingCost;
       await animal.save();
 
-      if (userId) {
-        try {
-          const capital = await Capital.getOrCreate(userId);
-          await capital.recordAnimalSale(
-            totalCost,
-            sellingPrice,
-            `Animal sale: ${animal.tagId || animal.name || animal._id}`,
-            String(animal._id),
-            userId,
-            sellingCost
-          );
-        } catch (err) {
-          console.error('Failed to record capital for animal sale:', err.message || err);
-        }
-      }
+      // Accumulate for aggregated capital transaction
+      aggregatedTotalCost += totalCost;
+      aggregatedSellingPrice += sellingPrice;
+      aggregatedSellingCost += sellingCost;
+      successfulAnimals.push({
+        animalId: animal._id,
+        tagId: animal.tagId,
+        name: animal.name,
+        totalCost,
+        sellingPrice,
+        profit: profitFromSale
+      });
 
       // Create audit log for each sale
       logAction({
@@ -575,7 +637,37 @@ const bulkMarkAsSold = async (animalsData, userId) => {
     }
   }
 
+  // Create single aggregated capital transaction for all successful sales
+  if (userId && successfulAnimals.length > 0) {
+    try {
+      const capital = await Capital.getOrCreate(userId);
+      await capital.recordAnimalSale(
+        aggregatedTotalCost,
+        aggregatedSellingPrice,
+        `Bulk animal sale: ${successfulAnimals.length} animal(s)`,
+        null, // entityId null for aggregated transaction
+        userId,
+        aggregatedSellingCost
+      );
+    } catch (err) {
+      logger.error('Failed to record aggregated capital for bulk animal sale:', err.message || err);
+    }
+  }
+
   return results;
+};
+
+/**
+ * Recalculate animal costs (maintenance function for denormalized fields)
+ */
+const recalculateCosts = async (id) => {
+  const animal = await Animal.recalculateCosts(id);
+
+  if (!animal) {
+    throw ApiError.notFound('Animal not found');
+  }
+
+  return animal;
 };
 
 module.exports = {
@@ -589,5 +681,6 @@ module.exports = {
   getByPen,
   declareDead,
   markAsSold,
-  bulkMarkAsSold
+  bulkMarkAsSold,
+  recalculateCosts
 };

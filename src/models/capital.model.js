@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 const { CAPITAL_TRANSACTION_TYPES, INVESTMENT_SUBTYPES } = require('../constants');
+const logger = require('../utils/logger');
 
 const transactionSchema = new mongoose.Schema({
   amount: {
@@ -78,9 +79,7 @@ const capitalSchema = new mongoose.Schema(
     }
   },
   {
-    timestamps: true,
-    toJSON: { virtuals: true },
-    toObject: { virtuals: true }
+    timestamps: true
   }
 );
 
@@ -103,6 +102,19 @@ capitalSchema.virtual('totalExpenses').get(function () {
 
 // Method to add transaction
 capitalSchema.methods.addTransaction = async function (amount, type, description, reference = null, createdBy = null, investmentSubtype = null) {
+  // Guard against overdraft for expense transactions
+  const EXPENSE_TYPES = [
+    'Animal Purchase', 'Stock Purchase', 'Salaries', 'Infrastructure',
+    'Maintenance', 'Utilities', 'Transportation', 'Veterinary', 'Other Expense'
+  ];
+  if (amount < 0 && EXPENSE_TYPES.includes(type)) {
+    if (Math.abs(amount) > this.availableAmount + 0.01) {
+      // Log warning but don't throw — capital can go negative for system-generated transactions
+      // but record it so it can be reconciled
+      logger.warn(`Capital overdraft: ${type} of ${Math.abs(amount)}, available: ${this.availableAmount}`);
+    }
+  }
+
   const transaction = {
     amount,
     type,
@@ -137,8 +149,12 @@ capitalSchema.methods.addTransaction = async function (amount, type, description
     }
     this.totalCapital = Math.max(0, this.totalCapital - absAmount);
     this.availableAmount += amount; // amount is negative
-  } else {
-    this.investedAmount += Math.abs(amount);
+  } else if (amount < 0) {
+    // Only increment investedAmount for specific investment types
+    const investmentTypes = ['Animal Purchase', 'Stock Purchase', 'Infrastructure'];
+    if (investmentTypes.includes(type)) {
+      this.investedAmount += Math.abs(amount);
+    }
     this.availableAmount += amount; // amount is negative
   }
 
@@ -170,15 +186,19 @@ capitalSchema.methods.addLoss = async function (amount, description, reference =
  * sellingCost = our expense (transport, commission) - reduces profit
  */
 capitalSchema.methods.recordAnimalSale = async function (totalCost, sellingPrice, description, reference = null, createdBy = null, sellingCost = 0) {
-  const profitFromSale = sellingPrice - totalCost - sellingCost;
-
-  // Return cost to available balance and reduce invested
+  // Return invested cost to available and reduce investedAmount
   this.availableAmount += totalCost;
   this.investedAmount = Math.max(0, this.investedAmount - totalCost);
-  // Deduct selling cost (our expense)
+
+  // Add actual cash received from sale
+  this.availableAmount += sellingPrice;
+
+  // Deduct selling expenses
   if (sellingCost > 0) {
     this.availableAmount -= sellingCost;
   }
+
+  const profitFromSale = sellingPrice - totalCost - sellingCost;
 
   if (profitFromSale > 0) {
     const amountToLoss = Math.min(profitFromSale, this.loss);
@@ -193,7 +213,7 @@ capitalSchema.methods.recordAnimalSale = async function (totalCost, sellingPrice
     amount: sellingPrice,
     type: 'Animal Sale',
     date: new Date(),
-    description: description || `Animal sale - cost returned ${totalCost}, sale ${sellingPrice}`,
+    description: description || 'Animal sale',
     reference,
     createdBy
   });

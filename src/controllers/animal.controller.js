@@ -128,9 +128,21 @@ const markAsSold = asyncHandler(async (req, res) => {
  */
 const bulkMarkAsSold = asyncHandler(async (req, res) => {
   const result = await animalService.bulkMarkAsSold(req.body.animals, req.user.id);
-  
+
   res.status(HTTP_STATUS.OK).json(
     successResponse(result, 'Bulk sale processing completed')
+  );
+});
+
+/**
+ * Recalculate animal costs (Admin only)
+ * POST /api/animals/:id/recalculate-costs
+ */
+const recalculateAnimalCosts = asyncHandler(async (req, res) => {
+  const animal = await animalService.recalculateCosts(req.params.id);
+
+  res.status(HTTP_STATUS.OK).json(
+    successResponse(animal, 'Animal costs recalculated successfully')
   );
 });
 
@@ -145,5 +157,6 @@ module.exports = {
   getByPen,
   declareDead,
   markAsSold,
-  bulkMarkAsSold
+  bulkMarkAsSold,
+  recalculateAnimalCosts
 };

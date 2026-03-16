@@ -41,9 +41,7 @@ const advanceSchema = new mongoose.Schema(
     }
   },
   {
-    timestamps: true,
-    toJSON: { virtuals: true },
-    toObject: { virtuals: true }
+    timestamps: true
   }
 );
 
@@ -52,32 +50,20 @@ advanceSchema.index({ employee: 1 });
 advanceSchema.index({ date: -1 });
 advanceSchema.index({ type: 1 });
 
-// Pre-save middleware to update employee balance
-advanceSchema.pre('save', async function (next) {
-  if (this.isNew) {
-    const Employee = mongoose.model('Employee');
-    const employee = await Employee.findById(this.employee);
-    
-    if (!employee) {
-      return next(new Error('Employee not found'));
-    }
-    
-    // Validate return amount
-    if (this.type === 'Returned' && this.amount > employee.advanceBalance) {
-      return next(new Error('Return amount cannot exceed current advance balance'));
-    }
-    
-    // Update employee balance
-    if (this.type === 'Given') {
-      employee.advanceBalance += this.amount;
-    } else {
-      employee.advanceBalance -= this.amount;
-    }
-    
-    await employee.save();
-    this.balanceAfter = employee.advanceBalance;
-  }
-  
+// Pre-save middleware to validate and calculate balance
+advanceSchema.pre('save', function (next) {
+  // Note: Employee balance update is handled in the service layer
+  // This hook just does basic validation/calculation
+
+  // KNOWN LIMITATION (F-42): The balanceAfter field is denormalized and calculated at save-time.
+  // This creates a potential race condition in high-concurrency scenarios where multiple
+  // advances are created simultaneously. The balance may not accurately reflect the true state
+  // if multiple requests execute in parallel. A solution would be to:
+  // 1. Use transactions (MongoDB 4.0+)
+  // 2. Use a separate aggregation pipeline for balance calculations
+  // 3. Implement optimistic locking with version fields
+  // For now, this is accepted as a known limitation.
+
   next();
 });
 

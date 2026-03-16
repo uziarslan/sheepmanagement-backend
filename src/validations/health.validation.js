@@ -16,12 +16,12 @@ const createVaccination = {
     date: Joi.date().default(Date.now),
     scope: Joi.string().required().valid(...VACCINATION_SCOPES),
     pen: Joi.string().hex().length(24).when('scope', {
-      is: 'Shed',
+      is: 'Pen',
       then: Joi.required(),
       otherwise: Joi.allow(null)
     }),
     animal: Joi.string().hex().length(24).when('scope', {
-      is: 'Individual Animal',
+      is: 'Individual',
       then: Joi.required(),
       otherwise: Joi.allow(null)
     }),
@@ -90,13 +90,13 @@ const createDeworming = {
     date: Joi.date().default(Date.now),
     scope: Joi.string().required().valid(...DEWORMING_SCOPES),
     pen: Joi.string().hex().length(24).when('scope', {
-      is: 'Shed',
+      is: 'Pen',
       then: Joi.required(),
       otherwise: Joi.allow(null)
     }),
     penName: Joi.string(),
     animal: Joi.string().hex().length(24).when('scope', {
-      is: 'Individual Animal',
+      is: 'Individual',
       then: Joi.required(),
       otherwise: Joi.allow(null)
     }),

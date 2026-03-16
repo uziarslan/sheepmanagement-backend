@@ -8,7 +8,8 @@ const {
   errorConverter,
   errorHandler,
   notFoundHandler,
-  apiLimiter
+  apiLimiter,
+  createLimiter
 } = require('./middleware');
 const routes = require('./routes');
 
@@ -46,10 +47,16 @@ if (env.isDevelopment) {
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
-// Rate limiting (apply to all API routes)
-if (env.isProduction) {
-  app.use('/api', apiLimiter);
-}
+// Rate limiting (apply to all API routes in all environments)
+app.use('/api', apiLimiter);
+
+// Stricter rate limiting for refresh-token endpoint
+const refreshTokenLimiter = createLimiter(
+  15 * 60 * 1000, // 15 minutes
+  5, // 5 attempts per window (stricter than general API limit)
+  'Too many token refresh attempts, please try again later.'
+);
+app.use('/api/auth/refresh-token', refreshTokenLimiter);
 
 // API Routes
 app.use('/api', routes);
