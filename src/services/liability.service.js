@@ -1,3 +1,4 @@
+const mongoose = require('mongoose');
 const { Liability, Capital } = require('../models');
 const logger = require('../utils/logger');
 const { ApiError, getPaginationOptions, getSortOptions, getPaginationMeta, logAction } = require('../utils');
@@ -71,12 +72,16 @@ const getLenderBalances = async (userId) => {
 const getLenderOutstanding = async (lenderName, userId) => {
   const name = (lenderName || '').trim();
   const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const nameRegex = new RegExp(`^\\s*${escaped}\\s*$`, 'i');
+  // Aggregate pipelines don't auto-cast strings to ObjectId — cast explicitly
+  const userObjectId = new mongoose.Types.ObjectId(userId);
+
   const borrowed = await Liability.aggregate([
-    { $match: { lenderName: { $regex: new RegExp(`^${escaped}$`, 'i') }, user: userId, type: 'Borrowed' } },
+    { $match: { lenderName: { $regex: nameRegex }, user: userObjectId, type: 'Borrowed' } },
     { $group: { _id: null, total: { $sum: '$amount' } } }
   ]);
   const returned = await Liability.aggregate([
-    { $match: { lenderName: { $regex: new RegExp(`^${escaped}$`, 'i') }, user: userId, type: 'Returned' } },
+    { $match: { lenderName: { $regex: nameRegex }, user: userObjectId, type: 'Returned' } },
     { $group: { _id: null, total: { $sum: '$amount' } } }
   ]);
 

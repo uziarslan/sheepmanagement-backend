@@ -67,19 +67,24 @@ const getById = async (id) => {
  * Create stock item
  */
 const create = async (stockData, userId) => {
+  const transport = Number(stockData.transportation) || 0;
+  const loading = Number(stockData.loadingUnloading) || 0;
+  const totalCost = (Number(stockData.totalPrice) || 0) + transport + loading;
+
+  const dataForStock = { ...stockData };
+  delete dataForStock.transportation;
+  delete dataForStock.loadingUnloading;
+  dataForStock.totalPrice = totalCost;
+
   const stock = await Stock.create({
-    ...stockData,
+    ...dataForStock,
     createdBy: userId
   });
 
   // Deduct from capital: totalPrice + transportation + loadingUnloading (Infrastructure for Assets, Stock Purchase for others)
   try {
     const capital = await Capital.findOne({ user: userId });
-    if (capital && stockData.totalPrice) {
-      const transport = Number(stockData.transportation) || 0;
-      const loading = Number(stockData.loadingUnloading) || 0;
-      const totalCost = stockData.totalPrice + transport + loading;
-
+    if (capital && totalCost > 0) {
       const isAsset = stockData.category === 'Assets';
       const txType = isAsset ? 'Infrastructure' : 'Stock Purchase';
       let desc = isAsset
@@ -92,7 +97,7 @@ const create = async (stockData, userId) => {
         desc += ` (${parts.join(', ')})`;
       }
       await capital.addTransaction(
-        -totalCost,
+        -totalCost, // includes base price + transport + loading
         txType,
         desc,
         stock._id,
@@ -115,7 +120,7 @@ const create = async (stockData, userId) => {
       category: stock.category,
       quantity: stockData.packQuantity,
       unit: stockData.unit,
-      totalPrice: stockData.totalPrice
+      totalPrice: totalCost
     }
   });
 

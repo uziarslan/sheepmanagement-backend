@@ -90,11 +90,20 @@ const bulkCreate = {
         arrivalDate: Joi.date().required(),
         birthDate: Joi.date().allow(null),
         purchasePrice: Joi.number().required().min(0),
+        purchaseTransport: Joi.number().min(0).allow(null),
+        purchaseMandiExpenses: Joi.number().min(0).allow(null),
+        purchaseFuel: Joi.number().min(0).allow(null),
+        purchaseFood: Joi.number().min(0).allow(null),
+        purchaseHotel: Joi.number().min(0).allow(null),
         buyingWeight: Joi.number().min(0).allow(null),
         weight: Joi.number().required().min(0),
+        weightDate: Joi.date().default(Date.now),
         pen: Joi.string().hex().length(24).allow(null),
         status: Joi.string().valid(...ANIMAL_STATUSES).default('Active'),
-        pedigreeInfo: Joi.boolean().default(false)
+        pedigreeInfo: Joi.boolean().default(false),
+        sire: Joi.string().hex().length(24).allow(null),
+        dam: Joi.string().hex().length(24).allow(null),
+        notes: Joi.string().max(1000).allow('', null)
       })
     ).min(1).required()
   })
@@ -115,9 +124,20 @@ const getAnimals = {
   })
 };
 
+const getByTagIds = {
+  body: Joi.object().keys({
+    tagIds: Joi.array()
+      .items(Joi.string().trim().uppercase())
+      .min(1)
+      .max(2000)
+      .required()
+  })
+};
+
 module.exports = {
   createAnimal,
   updateAnimal,
   bulkCreate,
-  getAnimals
+  getAnimals,
+  getByTagIds
 };

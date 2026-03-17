@@ -155,8 +155,9 @@ stockSchema.pre('save', function (next) {
       this.openingStockAmount = this.openingStockQty * this.openingRatePerUnit;
     }
 
-    // Only set currentQty if not explicitly provided
-    if (this.currentQty == null) {
+    // For new documents, always initialise currentQty from openingStockQty
+    // (schema default of 0 is applied before the hook, so == null check never fires)
+    if (!this.currentQty && this.openingStockQty != null) {
       this.currentQty = this.openingStockQty;
     }
   }

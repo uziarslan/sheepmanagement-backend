@@ -47,6 +47,23 @@ const getAll = async (query) => {
 };
 
 /**
+ * Get animals by Tag IDs (bulk lookup)
+ */
+const getByTagIds = async (tagIds) => {
+  const cleaned = (Array.isArray(tagIds) ? tagIds : [])
+    .map(t => String(t ?? '').trim().toUpperCase())
+    .filter(Boolean);
+
+  if (cleaned.length === 0) return [];
+
+  const animals = await Animal.find({ tagId: { $in: cleaned } })
+    .populate('pen', 'name type')
+    .sort({ tagId: 1 });
+
+  return animals.map(a => a.toJSON());
+};
+
+/**
  * Get animal by ID
  */
 const getById = async (id) => {
@@ -135,7 +152,7 @@ const create = async (animalData, userId) => {
 };
 
 /**
- * Bulk create animals
+ * Bulk create animals (optimized: batch DB ops instead of per-animal round-trips)
  */
 const bulkCreate = async (animalsData, userId) => {
   const results = {
@@ -143,79 +160,98 @@ const bulkCreate = async (animalsData, userId) => {
     failed: []
   };
 
+  // --- 1. Batch pen capacity check (2 queries total instead of N) ---
+  const uniquePenIds = [...new Set(
+    animalsData.map(a => a.pen).filter(Boolean).map(String)
+  )];
+
+  const penCapacityMap = {};
+  if (uniquePenIds.length > 0) {
+    const [pens, penCounts] = await Promise.all([
+      Pen.find({ _id: { $in: uniquePenIds } }).lean(),
+      Animal.aggregate([
+        { $match: { pen: { $in: uniquePenIds.map(id => new (require('mongoose').Types.ObjectId)(id)) }, status: 'Active' } },
+        { $group: { _id: '$pen', count: { $sum: 1 } } }
+      ])
+    ]);
+
+    const countMap = {};
+    for (const c of penCounts) countMap[String(c._id)] = c.count;
+
+    for (const pen of pens) {
+      const id = String(pen._id);
+      penCapacityMap[id] = {
+        capacity: pen.capacity,
+        current: countMap[id] || 0,
+        name: pen.name,
+        requestedCount: 0
+      };
+    }
+
+    for (const a of animalsData) {
+      if (a.pen && penCapacityMap[String(a.pen)]) {
+        penCapacityMap[String(a.pen)].requestedCount++;
+      }
+    }
+
+    for (const [, info] of Object.entries(penCapacityMap)) {
+      if (info.current + info.requestedCount > info.capacity) {
+        throw ApiError.badRequest(
+          `Pen "${info.name}" would exceed capacity. Current: ${info.current}, Requested: ${info.requestedCount}, Capacity: ${info.capacity}`
+        );
+      }
+    }
+  }
+
+  // --- 2. Batch duplicate tagId check (1 query instead of N) ---
+  const allTagIds = animalsData.map(a => a.tagId).filter(Boolean);
+  const existingAnimals = allTagIds.length > 0
+    ? await Animal.find({ tagId: { $in: allTagIds } }).select('tagId').lean()
+    : [];
+  const existingTagSet = new Set(existingAnimals.map(a => a.tagId));
+
+  // --- 3. Separate valid vs duplicate, then insertMany for valid ones ---
+  const toInsert = [];
   let totalInvestment = 0;
 
-  // Pre-check pen capacity for all animals
-  const penCapacityMap = {};
   for (const animalData of animalsData) {
-    if (animalData.pen) {
-      const pen = await Pen.findById(animalData.pen);
-      if (pen) {
-        const penId = String(pen._id);
-        if (!penCapacityMap[penId]) {
-          const currentCount = await Animal.countDocuments({ pen: animalData.pen, status: 'Active' });
-          penCapacityMap[penId] = {
-            capacity: pen.capacity,
-            current: currentCount,
-            name: pen.name
-          };
-        }
-        penCapacityMap[penId].requestedCount = (penCapacityMap[penId].requestedCount || 0) + 1;
-      }
+    if (animalData.tagId && existingTagSet.has(animalData.tagId)) {
+      results.failed.push({ data: animalData, error: `Tag ID ${animalData.tagId} already exists` });
+      continue;
     }
+    toInsert.push({ ...animalData, createdBy: userId });
+    totalInvestment += animalData.purchasePrice || 0;
   }
 
-  // Check if any pen will exceed capacity
-  for (const [penId, info] of Object.entries(penCapacityMap)) {
-    if (info.current + info.requestedCount > info.capacity) {
-      throw ApiError.badRequest(
-        `Pen "${info.name}" would exceed capacity. Current: ${info.current}, Requested: ${info.requestedCount}, Capacity: ${info.capacity}`
-      );
-    }
-  }
-
-  for (const animalData of animalsData) {
+  if (toInsert.length > 0) {
     try {
-      // Check for duplicate tagId
-      if (animalData.tagId) {
-        const existing = await Animal.findOne({ tagId: animalData.tagId });
-        if (existing) {
-          results.failed.push({
-            data: animalData,
-            error: `Tag ID ${animalData.tagId} already exists`
-          });
-          continue;
-        }
+      const inserted = await Animal.insertMany(toInsert, { ordered: false });
+      results.success = inserted;
+    } catch (err) {
+      if (err.insertedDocs && err.insertedDocs.length > 0) {
+        results.success = err.insertedDocs;
       }
-
-      const animal = await Animal.create({
-        ...animalData,
-        createdBy: userId
-      });
-
-      results.success.push(animal);
-      totalInvestment += animalData.purchasePrice || 0;
-
-      // Create audit log for each animal
-      logAction({
-        userId,
-        action: 'Animal Bulk Created',
-        entityType: 'Animal',
-        entityId: animal._id,
-        metadata: {
-          tagId: animal.tagId,
-          name: animal.name,
-          purchasePrice: animalData.purchasePrice,
-          animalType: animal.animalType,
-          bulkImport: true
-        }
-      });
-    } catch (error) {
-      results.failed.push({
-        data: animalData,
-        error: error.message
-      });
+      const writeErrors = err.writeErrors || [];
+      for (const we of writeErrors) {
+        const failedDoc = toInsert[we.index];
+        results.failed.push({ data: failedDoc, error: we.errmsg || we.message || 'Insert failed' });
+      }
     }
+  }
+
+  // Single audit log for the entire bulk operation
+  if (results.success.length > 0) {
+    logAction({
+      userId,
+      action: 'Animal Bulk Created',
+      entityType: 'Animal',
+      entityId: results.success[0]._id,
+      metadata: {
+        count: results.success.length,
+        totalInvestment,
+        bulkImport: true
+      }
+    });
   }
 
   // Deduct total from capital after all successful creations
@@ -224,7 +260,7 @@ const bulkCreate = async (animalsData, userId) => {
       const capital = await Capital.findOne({ user: userId });
       if (capital) {
         await capital.addTransaction(
-          -totalInvestment, // Negative because it's an investment/expense
+          -totalInvestment,
           'Animal Purchase',
           `Bulk import: ${results.success.length} animals purchased for total amount ${totalInvestment}`,
           null,
@@ -232,7 +268,6 @@ const bulkCreate = async (animalsData, userId) => {
         );
       }
     } catch (error) {
-      // Log error but don't fail the request
       logger.error('Failed to update capital for bulk animal purchase:', error);
     }
   }
@@ -682,5 +717,6 @@ module.exports = {
   declareDead,
   markAsSold,
   bulkMarkAsSold,
-  recalculateCosts
+  recalculateCosts,
+  getByTagIds
 };

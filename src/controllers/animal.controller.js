@@ -99,6 +99,18 @@ const getByPen = asyncHandler(async (req, res) => {
 });
 
 /**
+ * Bulk lookup animals by Tag IDs
+ * POST /api/animals/by-tagids
+ */
+const getByTagIds = asyncHandler(async (req, res) => {
+  const animals = await animalService.getByTagIds(req.body.tagIds);
+
+  res.status(HTTP_STATUS.OK).json(
+    successResponse(animals, 'Animals retrieved successfully')
+  );
+});
+
+/**
  * Declare animal as dead
  * PUT /api/animals/:id/declare-dead
  */
@@ -155,6 +167,7 @@ module.exports = {
   remove,
   moveToPen,
   getByPen,
+  getByTagIds,
   declareDead,
   markAsSold,
   bulkMarkAsSold,

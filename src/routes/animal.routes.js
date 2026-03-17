@@ -28,6 +28,13 @@ router.post(
   animalController.bulkMarkAsSold
 );
 
+// POST /api/animals/by-tagids - Bulk lookup by Tag IDs (used by bulk sale/operations)
+router.post(
+  '/by-tagids',
+  validate(animalValidation.getByTagIds),
+  animalController.getByTagIds
+);
+
 // GET /api/animals/pen/:penId - Get animals by pen
 router.get(
   '/pen/:penId',
