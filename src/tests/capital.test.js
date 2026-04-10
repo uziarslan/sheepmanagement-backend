@@ -5,6 +5,7 @@
 
 const mongoose = require('mongoose');
 const { Capital, User } = require('../models');
+const { PARTNERS } = require('../constants');
 const logger = require('../utils/logger');
 
 // Mock logger
@@ -86,7 +87,7 @@ describe('Capital Service', () => {
       const initialPartner1 = capital.partner1Capital;
       const initialTotal = capital.totalCapital;
 
-      await capital.addTransaction(10000, 'Additional Investment', 'Test', null, userId, 'Partner1 (Imran Shah)');
+      await capital.addTransaction(10000, 'Additional Investment', 'Test', null, userId, PARTNERS.PARTNER_1);
       capital = await Capital.findById(capital._id);
 
       expect(capital.partner1Capital).toBe(initialPartner1 + 10000);

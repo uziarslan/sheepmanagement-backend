@@ -1,5 +1,6 @@
 const { Capital } = require('../models');
 const { ApiError } = require('../utils');
+const { PARTNERS } = require('../constants');
 
 /**
  * Get capital info for user
@@ -61,8 +62,8 @@ const addTransaction = async (userId, amount, type, description, reference = nul
     const re = capital.retainedEarningsCapital || 0;
     const hasSubdivision = p1 + p2 + re > 0;
     let partnerBalance = 0;
-    if (investmentSubtype === 'Partner1 (Imran Shah)') partnerBalance = p1;
-    else if (investmentSubtype === 'Partner2 (Raza Abbas)') partnerBalance = p2;
+    if (investmentSubtype === PARTNERS.PARTNER_1) partnerBalance = p1;
+    else if (investmentSubtype === PARTNERS.PARTNER_2) partnerBalance = p2;
     else if (investmentSubtype === 'Retained Earnings') partnerBalance = hasSubdivision ? re : capital.totalCapital || 0;
     if (absAmount > partnerBalance) {
       throw ApiError.badRequest(

@@ -145,12 +145,22 @@ const CURE_STATUSES = ['Cured', 'Uncured', 'In Treatment'];
 // BCS values (1-10 scale, integers)
 const BCS_VALUES = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
 
+// Partner Configuration from environment variables
+const PARTNER_1_NAME = process.env.PARTNER_1_NAME || 'Imran Shah';
+const PARTNER_2_NAME = process.env.PARTNER_2_NAME || 'Raza Abbas';
+
 // Investment subtypes for capital (Partner1, Partner2, Retained Earnings)
 const INVESTMENT_SUBTYPES = [
-  'Partner1 (Imran Shah)',
-  'Partner2 (Raza Abbas)',
+  `Partner1 (${PARTNER_1_NAME})`,
+  `Partner2 (${PARTNER_2_NAME})`,
   'Retained Earnings'
 ];
+
+// Export partner constants for use in other files
+const PARTNERS = {
+  PARTNER_1: `Partner1 (${PARTNER_1_NAME})`,
+  PARTNER_2: `Partner2 (${PARTNER_2_NAME})`
+};
 
 // Liability transaction types (we borrow from / return to lenders)
 const LIABILITY_TYPES = ['Borrowed', 'Returned'];
@@ -218,6 +228,7 @@ module.exports = {
   DEWORMING_SCOPES,
   CURE_STATUSES,
   BCS_VALUES,
+  PARTNERS,
   INVESTMENT_SUBTYPES,
   LIABILITY_TYPES,
   CAPITAL_TRANSACTION_TYPES,

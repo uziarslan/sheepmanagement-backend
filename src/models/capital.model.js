@@ -1,5 +1,5 @@
 const mongoose = require('mongoose');
-const { CAPITAL_TRANSACTION_TYPES, INVESTMENT_SUBTYPES } = require('../constants');
+const { CAPITAL_TRANSACTION_TYPES, INVESTMENT_SUBTYPES, PARTNERS } = require('../constants');
 const logger = require('../utils/logger');
 
 const transactionSchema = new mongoose.Schema({
@@ -133,16 +133,16 @@ capitalSchema.methods.addTransaction = async function (amount, type, description
     this.availableAmount += amount;
     // Update subdivision for investment types (Additional Investment)
     if (investmentSubtype && INVESTMENT_SUBTYPES.includes(investmentSubtype)) {
-      if (investmentSubtype === 'Partner1 (Imran Shah)') this.partner1Capital = (this.partner1Capital || 0) + amount;
-      else if (investmentSubtype === 'Partner2 (Raza Abbas)') this.partner2Capital = (this.partner2Capital || 0) + amount;
+      if (investmentSubtype === PARTNERS.PARTNER_1) this.partner1Capital = (this.partner1Capital || 0) + amount;
+      else if (investmentSubtype === PARTNERS.PARTNER_2) this.partner2Capital = (this.partner2Capital || 0) + amount;
       else if (investmentSubtype === 'Retained Earnings') this.retainedEarningsCapital = (this.retainedEarningsCapital || 0) + amount;
     }
   } else if (type === 'Investment Withdrawal' && investmentSubtype && INVESTMENT_SUBTYPES.includes(investmentSubtype)) {
     // Deduct from specific subdivision and totals
     const absAmount = Math.abs(amount);
-    if (investmentSubtype === 'Partner1 (Imran Shah)') {
+    if (investmentSubtype === PARTNERS.PARTNER_1) {
       this.partner1Capital = Math.max(0, (this.partner1Capital || 0) - absAmount);
-    } else if (investmentSubtype === 'Partner2 (Raza Abbas)') {
+    } else if (investmentSubtype === PARTNERS.PARTNER_2) {
       this.partner2Capital = Math.max(0, (this.partner2Capital || 0) - absAmount);
     } else if (investmentSubtype === 'Retained Earnings') {
       this.retainedEarningsCapital = Math.max(0, (this.retainedEarningsCapital || 0) - absAmount);
@@ -239,9 +239,9 @@ capitalSchema.methods.setInitialCapital = async function (partner1, partner2, re
     this.history.push({
       amount: partner1,
       type: 'Initial Investment',
-      investmentSubtype: 'Partner1 (Imran Shah)',
+      investmentSubtype: PARTNERS.PARTNER_1,
       date: now,
-      description: 'Initial capital - Partner1 (Imran Shah)',
+      description: `Initial capital - ${PARTNERS.PARTNER_1}`,
       createdBy
     });
   }
@@ -249,9 +249,9 @@ capitalSchema.methods.setInitialCapital = async function (partner1, partner2, re
     this.history.push({
       amount: partner2,
       type: 'Initial Investment',
-      investmentSubtype: 'Partner2 (Raza Abbas)',
+      investmentSubtype: PARTNERS.PARTNER_2,
       date: now,
-      description: 'Initial capital - Partner2 (Raza Abbas)',
+      description: `Initial capital - ${PARTNERS.PARTNER_2}`,
       createdBy
     });
   }
