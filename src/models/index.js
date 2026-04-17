@@ -10,8 +10,10 @@ const Vaccination = require('./vaccination.model');
 const Treatment = require('./treatment.model');
 const Deworming = require('./deworming.model');
 const WeightRecord = require('./weightRecord.model');
+const TemperatureRecord = require('./temperatureRecord.model');
 const BcsRecord = require('./bcsRecord.model');
 const HoofRecord = require('./hoofRecord.model');
+const ShearingRecord = require('./shearingRecord.model');
 const FeedRecipe = require('./feedRecipe.model');
 const FeedApplication = require('./feedApplication.model');
 const VaccineRecipe = require('./vaccineRecipe.model');
@@ -33,8 +35,10 @@ module.exports = {
   Treatment,
   Deworming,
   WeightRecord,
+  TemperatureRecord,
   BcsRecord,
   HoofRecord,
+  ShearingRecord,
   FeedRecipe,
   FeedApplication,
   VaccineRecipe,

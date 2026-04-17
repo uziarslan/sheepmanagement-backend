@@ -106,6 +106,40 @@ const createWeightRecord = asyncHandler(async (req, res) => {
   );
 });
 
+const bulkCreateWeightRecords = asyncHandler(async (req, res) => {
+  const result = await healthService.bulkCreateWeightRecords(req.body.records, req.user.id);
+
+  res.status(HTTP_STATUS.CREATED).json(
+    successResponse(result, `${result.created.length} weight record(s) created, ${result.errors.length} failed`)
+  );
+});
+
+// ============ TEMPERATURE RECORD CONTROLLERS ============
+
+const getTemperatureRecords = asyncHandler(async (req, res) => {
+  const result = await healthService.getTemperatureRecords(req.query);
+
+  res.status(HTTP_STATUS.OK).json(
+    successResponse(result.data, 'Temperature records retrieved successfully', result.meta)
+  );
+});
+
+const createTemperatureRecord = asyncHandler(async (req, res) => {
+  const record = await healthService.createTemperatureRecord(req.body, req.user.id);
+
+  res.status(HTTP_STATUS.CREATED).json(
+    successResponse(record, 'Temperature recorded successfully')
+  );
+});
+
+const bulkCreateTemperatureRecords = asyncHandler(async (req, res) => {
+  const result = await healthService.bulkCreateTemperatureRecords(req.body.records, req.user.id);
+
+  res.status(HTTP_STATUS.CREATED).json(
+    successResponse(result, `${result.created.length} temperature record(s) created, ${result.errors.length} failed`)
+  );
+});
+
 // ============ BCS RECORD CONTROLLERS ============
 
 const getBcsRecords = asyncHandler(async (req, res) => {
@@ -142,6 +176,14 @@ const createHoofRecord = asyncHandler(async (req, res) => {
   );
 });
 
+const bulkCreateHoofRecords = asyncHandler(async (req, res) => {
+  const result = await healthService.bulkCreateHoofRecords(req.body, req.user.id);
+
+  res.status(HTTP_STATUS.CREATED).json(
+    successResponse(result, `${result.created.length} hoof record(s) created, ${result.errors.length} failed`)
+  );
+});
+
 const updateHoofRecord = asyncHandler(async (req, res) => {
   const record = await healthService.updateHoofRecord(req.params.id, req.body, req.user.id);
   
@@ -155,6 +197,48 @@ const deleteHoofRecord = asyncHandler(async (req, res) => {
   
   res.status(HTTP_STATUS.OK).json(
     successResponse(null, 'Hoof record deleted successfully')
+  );
+});
+
+// ============ SHEARING RECORD CONTROLLERS ============
+
+const getShearingRecords = asyncHandler(async (req, res) => {
+  const result = await healthService.getShearingRecords(req.query);
+  
+  res.status(HTTP_STATUS.OK).json(
+    successResponse(result.data, 'Shearing records retrieved successfully', result.meta)
+  );
+});
+
+const createShearingRecord = asyncHandler(async (req, res) => {
+  const record = await healthService.createShearingRecord(req.body, req.user.id);
+  
+  res.status(HTTP_STATUS.CREATED).json(
+    successResponse(record, 'Shearing record created successfully')
+  );
+});
+
+const bulkCreateShearingRecords = asyncHandler(async (req, res) => {
+  const result = await healthService.bulkCreateShearingRecords(req.body, req.user.id);
+
+  res.status(HTTP_STATUS.CREATED).json(
+    successResponse(result, `${result.created.length} shearing record(s) created, ${result.errors.length} failed`)
+  );
+});
+
+const updateShearingRecord = asyncHandler(async (req, res) => {
+  const record = await healthService.updateShearingRecord(req.params.id, req.body, req.user.id);
+  
+  res.status(HTTP_STATUS.OK).json(
+    successResponse(record, 'Shearing record updated successfully')
+  );
+});
+
+const deleteShearingRecord = asyncHandler(async (req, res) => {
+  await healthService.deleteShearingRecord(req.params.id, req.user.id);
+  
+  res.status(HTTP_STATUS.OK).json(
+    successResponse(null, 'Shearing record deleted successfully')
   );
 });
 
@@ -185,14 +269,26 @@ module.exports = {
   // Weight Records
   getWeightRecords,
   createWeightRecord,
+  bulkCreateWeightRecords,
+  // Temperature Records
+  getTemperatureRecords,
+  createTemperatureRecord,
+  bulkCreateTemperatureRecords,
   // BCS Records
   getBcsRecords,
   createBcsRecord,
   // Hoof Records
   getHoofRecords,
   createHoofRecord,
+  bulkCreateHoofRecords,
   updateHoofRecord,
   deleteHoofRecord,
+  // Shearing Records
+  getShearingRecords,
+  createShearingRecord,
+  bulkCreateShearingRecords,
+  updateShearingRecord,
+  deleteShearingRecord,
   // Cure Tracking
   getCureTracking
 };

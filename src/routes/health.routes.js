@@ -107,6 +107,34 @@ router.post(
   healthController.createWeightRecord
 );
 
+router.post(
+  '/weight-records/bulk',
+  authorize('Admin', 'Manager', 'Employee'),
+  validate(healthValidation.bulkCreateWeightRecords),
+  healthController.bulkCreateWeightRecords
+);
+
+// ============ TEMPERATURE RECORDS ============
+router.get(
+  '/temperature-records',
+  validate(healthValidation.getHealthRecords),
+  healthController.getTemperatureRecords
+);
+
+router.post(
+  '/temperature-records',
+  authorize('Admin', 'Manager', 'Employee'),
+  validate(healthValidation.createTemperatureRecord),
+  healthController.createTemperatureRecord
+);
+
+router.post(
+  '/temperature-records/bulk',
+  authorize('Admin', 'Manager', 'Employee'),
+  validate(healthValidation.bulkCreateTemperatureRecords),
+  healthController.bulkCreateTemperatureRecords
+);
+
 // ============ BCS RECORDS ============
 router.get(
   '/bcs-records',
@@ -135,6 +163,13 @@ router.post(
   healthController.createHoofRecord
 );
 
+router.post(
+  '/hoof-records/bulk',
+  authorize('Admin', 'Manager', 'Employee'),
+  validate(healthValidation.bulkCreateHoofRecords),
+  healthController.bulkCreateHoofRecords
+);
+
 router.put(
   '/hoof-records/:id',
   authorize('Admin', 'Manager', 'Employee'),
@@ -146,6 +181,40 @@ router.delete(
   '/hoof-records/:id',
   authorize('Admin', 'Manager'),
   healthController.deleteHoofRecord
+);
+
+// ============ SHEARING RECORDS ============
+router.get(
+  '/shearing-records',
+  validate(healthValidation.getHealthRecords),
+  healthController.getShearingRecords
+);
+
+router.post(
+  '/shearing-records',
+  authorize('Admin', 'Manager', 'Employee'),
+  validate(healthValidation.createShearingRecord),
+  healthController.createShearingRecord
+);
+
+router.post(
+  '/shearing-records/bulk',
+  authorize('Admin', 'Manager', 'Employee'),
+  validate(healthValidation.bulkCreateShearingRecords),
+  healthController.bulkCreateShearingRecords
+);
+
+router.put(
+  '/shearing-records/:id',
+  authorize('Admin', 'Manager', 'Employee'),
+  validate(healthValidation.updateShearingRecord),
+  healthController.updateShearingRecord
+);
+
+router.delete(
+  '/shearing-records/:id',
+  authorize('Admin', 'Manager'),
+  healthController.deleteShearingRecord
 );
 
 module.exports = router;

@@ -3,8 +3,10 @@ const {
   Treatment,
   Deworming,
   WeightRecord,
+  TemperatureRecord,
   BcsRecord,
   HoofRecord,
+  ShearingRecord,
   Animal,
   Stock
 } = require('../models');
@@ -534,6 +536,204 @@ const createWeightRecord = async (data, userId) => {
   return record.populate('animal');
 };
 
+// ============ BULK WEIGHT RECORD SERVICE ============
+
+const bulkCreateWeightRecords = async (records, userId) => {
+  const mongoose = require('mongoose');
+  const animalIds = [...new Set(records.map(r => r.animal))];
+
+  // Fetch animals and latest weight per animal in parallel — just 2 DB queries total
+  const [animals, latestWeights] = await Promise.all([
+    Animal.find({ _id: { $in: animalIds } }).lean(),
+    WeightRecord.aggregate([
+      { $match: { animal: { $in: animalIds.map(id => new mongoose.Types.ObjectId(id)) } } },
+      { $sort: { date: -1 } },
+      { $group: { _id: '$animal', weight: { $first: '$weight' }, date: { $first: '$date' } } }
+    ])
+  ]);
+
+  const animalMap = new Map(animals.map(a => [String(a._id), a]));
+  const latestWeightMap = new Map(latestWeights.map(r => [String(r._id), r.weight]));
+
+  const docs = [];
+  const errors = [];
+
+  for (let i = 0; i < records.length; i++) {
+    const data = records[i];
+    const animal = animalMap.get(String(data.animal));
+    if (!animal) {
+      errors.push({ index: i, animal: data.animal, message: 'Animal not found' });
+      continue;
+    }
+
+    const prevWeight = latestWeightMap.get(String(data.animal)) ?? animal.weight ?? 0;
+    const weightChange = data.weight - prevWeight;
+    const percentageChange = prevWeight > 0
+      ? Number(((weightChange / prevWeight) * 100).toFixed(2))
+      : 0;
+
+    docs.push({
+      animal: data.animal,
+      animalTagId: animal.tagId,
+      animalName: animal.name,
+      date: data.date ? new Date(data.date) : new Date(),
+      weight: data.weight,
+      previousWeight: prevWeight,
+      weightChange: Number(weightChange.toFixed(2)),
+      percentageChange,
+      notes: data.notes || undefined,
+      recordedBy: userId,
+      createdBy: userId
+    });
+  }
+
+  // insertMany bypasses pre-save hooks — single DB write for all records
+  const inserted = docs.length > 0 ? await WeightRecord.insertMany(docs, { ordered: false }) : [];
+
+  if (inserted.length > 0) {
+    logAction({
+      userId,
+      action: 'Bulk Weight Records Created',
+      entityType: 'WeightRecord',
+      entityId: inserted[0]._id,
+      metadata: {
+        totalCreated: inserted.length,
+        totalFailed: errors.length,
+        totalRequested: records.length
+      }
+    });
+  }
+
+  return { created: inserted, errors };
+};
+
+// ============ TEMPERATURE RECORD SERVICES ============
+
+const getTemperatureRecords = async (query) => {
+  const { page, limit, skip } = getPaginationOptions(query);
+  const sort = getSortOptions(query.sort || '-date');
+
+  const filter = {};
+  if (query.animal) filter.animal = query.animal;
+
+  if (query.startDate || query.endDate) {
+    filter.date = {};
+    if (query.startDate) filter.date.$gte = new Date(query.startDate);
+    if (query.endDate) filter.date.$lte = new Date(query.endDate);
+  }
+
+  const [records, total] = await Promise.all([
+    TemperatureRecord.find(filter)
+      .populate('animal', 'tagId name')
+      .sort(sort)
+      .skip(skip)
+      .limit(limit)
+      .lean(),
+    TemperatureRecord.countDocuments(filter)
+  ]);
+
+  return {
+    data: records,
+    meta: getPaginationMeta(total, page, limit)
+  };
+};
+
+const createTemperatureRecord = async (data, userId) => {
+  const animal = await Animal.findById(data.animal);
+  if (!animal) throw ApiError.notFound('Animal not found');
+
+  data.animalTagId = animal.tagId;
+  data.animalName = animal.name;
+
+  const record = await TemperatureRecord.create({
+    ...data,
+    recordedBy: userId,
+    createdBy: userId
+  });
+
+  logAction({
+    userId,
+    action: 'Temperature Record Created',
+    entityType: 'TemperatureRecord',
+    entityId: record._id,
+    metadata: {
+      animalTagId: animal.tagId,
+      animalName: animal.name,
+      temperature: data.temperature,
+      date: data.date
+    }
+  });
+
+  return record.populate('animal');
+};
+
+// ============ BULK TEMPERATURE RECORD SERVICE ============
+
+const bulkCreateTemperatureRecords = async (records, userId) => {
+  const mongoose = require('mongoose');
+  const animalIds = [...new Set(records.map(r => r.animal))];
+
+  const [animals, latestTemps] = await Promise.all([
+    Animal.find({ _id: { $in: animalIds } }).lean(),
+    TemperatureRecord.aggregate([
+      { $match: { animal: { $in: animalIds.map(id => new mongoose.Types.ObjectId(id)) } } },
+      { $sort: { date: -1 } },
+      { $group: { _id: '$animal', temperature: { $first: '$temperature' } } }
+    ])
+  ]);
+
+  const animalMap = new Map(animals.map(a => [String(a._id), a]));
+  const latestTempMap = new Map(latestTemps.map(r => [String(r._id), r.temperature]));
+
+  const docs = [];
+  const errors = [];
+
+  for (let i = 0; i < records.length; i++) {
+    const data = records[i];
+    const animal = animalMap.get(String(data.animal));
+    if (!animal) {
+      errors.push({ index: i, animal: data.animal, message: 'Animal not found' });
+      continue;
+    }
+
+    const prevTemp = latestTempMap.get(String(data.animal)) ?? 0;
+    const tempChange = prevTemp > 0
+      ? Number((data.temperature - prevTemp).toFixed(2))
+      : 0;
+
+    docs.push({
+      animal: data.animal,
+      animalTagId: animal.tagId,
+      animalName: animal.name,
+      date: data.date ? new Date(data.date) : new Date(),
+      temperature: data.temperature,
+      previousTemperature: prevTemp,
+      temperatureChange: tempChange,
+      notes: data.notes || undefined,
+      recordedBy: userId,
+      createdBy: userId
+    });
+  }
+
+  const inserted = docs.length > 0 ? await TemperatureRecord.insertMany(docs, { ordered: false }) : [];
+
+  if (inserted.length > 0) {
+    logAction({
+      userId,
+      action: 'Bulk Temperature Records Created',
+      entityType: 'TemperatureRecord',
+      entityId: inserted[0]._id,
+      metadata: {
+        totalCreated: inserted.length,
+        totalFailed: errors.length,
+        totalRequested: records.length
+      }
+    });
+  }
+
+  return { created: inserted, errors };
+};
+
 // ============ BCS RECORD SERVICES ============
 
 const getBcsRecords = async (query) => {
@@ -656,6 +856,52 @@ const createHoofRecord = async (data, userId) => {
   return record.populate(['animal', 'technician']);
 };
 
+const bulkCreateHoofRecords = async (data, userId) => {
+  const mongoose = require('mongoose');
+  const { animals: animalIds, ...sharedData } = data;
+
+  const animals = await Animal.find({ _id: { $in: animalIds } }).lean();
+  const animalMap = new Map(animals.map(a => [String(a._id), a]));
+
+  const docs = [];
+  const errors = [];
+
+  for (let i = 0; i < animalIds.length; i++) {
+    const animal = animalMap.get(String(animalIds[i]));
+    if (!animal) {
+      errors.push({ index: i, animal: animalIds[i], message: 'Animal not found' });
+      continue;
+    }
+    docs.push({
+      ...sharedData,
+      animal: new mongoose.Types.ObjectId(animalIds[i]),
+      animalTagId: animal.tagId,
+      animalName: animal.name,
+      date: sharedData.date ? new Date(sharedData.date) : new Date(),
+      createdBy: userId
+    });
+  }
+
+  const inserted = docs.length > 0 ? await HoofRecord.insertMany(docs, { ordered: false }) : [];
+
+  if (inserted.length > 0) {
+    logAction({
+      userId,
+      action: 'Bulk Hoof Records Created',
+      entityType: 'HoofRecord',
+      entityId: inserted[0]._id,
+      metadata: {
+        totalCreated: inserted.length,
+        totalFailed: errors.length,
+        totalRequested: animalIds.length,
+        diagnosis: sharedData.diagnosis
+      }
+    });
+  }
+
+  return { created: inserted, errors };
+};
+
 const updateHoofRecord = async (id, data, userId) => {
   const record = await HoofRecord.findByIdAndUpdate(
     id,
@@ -694,6 +940,154 @@ const deleteHoofRecord = async (id, userId) => {
     metadata: {
       animalTagId: record.animalTagId,
       diagnosis: record.diagnosis
+    }
+  });
+  
+  return record;
+};
+
+// ============ SHEARING RECORD SERVICES ============
+
+const getShearingRecords = async (query) => {
+  const { page, limit, skip } = getPaginationOptions(query);
+  const sort = getSortOptions(query.sort || '-date');
+
+  const filter = {};
+  if (query.animal) filter.animal = query.animal;
+  
+  if (query.startDate || query.endDate) {
+    filter.date = {};
+    if (query.startDate) filter.date.$gte = new Date(query.startDate);
+    if (query.endDate) filter.date.$lte = new Date(query.endDate);
+  }
+
+  const [records, total] = await Promise.all([
+    ShearingRecord.find(filter)
+      .populate('animal', 'tagId name')
+      .populate('technician', 'name')
+      .sort(sort)
+      .skip(skip)
+      .limit(limit)
+      .lean(),
+    ShearingRecord.countDocuments(filter)
+  ]);
+
+  return {
+    data: records,
+    meta: getPaginationMeta(total, page, limit)
+  };
+};
+
+const createShearingRecord = async (data, userId) => {
+  const animal = await Animal.findById(data.animal);
+  if (!animal) throw ApiError.notFound('Animal not found');
+
+  data.animalTagId = animal.tagId;
+  data.animalName = animal.name;
+
+  const record = await ShearingRecord.create({
+    ...data,
+    createdBy: userId
+  });
+
+  logAction({
+    userId,
+    action: 'Shearing Record Created',
+    entityType: 'ShearingRecord',
+    entityId: record._id,
+    metadata: {
+      animalTagId: animal.tagId,
+      animalName: animal.name,
+      shearingType: data.shearingType,
+      date: data.date
+    }
+  });
+
+  return record.populate(['animal', 'technician']);
+};
+
+const bulkCreateShearingRecords = async (data, userId) => {
+  const mongoose = require('mongoose');
+  const { animals: animalIds, ...sharedData } = data;
+
+  const animals = await Animal.find({ _id: { $in: animalIds } }).lean();
+  const animalMap = new Map(animals.map(a => [String(a._id), a]));
+
+  const docs = [];
+  const errors = [];
+
+  for (let i = 0; i < animalIds.length; i++) {
+    const animal = animalMap.get(String(animalIds[i]));
+    if (!animal) {
+      errors.push({ index: i, animal: animalIds[i], message: 'Animal not found' });
+      continue;
+    }
+    docs.push({
+      ...sharedData,
+      animal: new mongoose.Types.ObjectId(animalIds[i]),
+      animalTagId: animal.tagId,
+      animalName: animal.name,
+      date: sharedData.date ? new Date(sharedData.date) : new Date(),
+      createdBy: userId
+    });
+  }
+
+  const inserted = docs.length > 0 ? await ShearingRecord.insertMany(docs, { ordered: false }) : [];
+
+  if (inserted.length > 0) {
+    logAction({
+      userId,
+      action: 'Bulk Shearing Records Created',
+      entityType: 'ShearingRecord',
+      entityId: inserted[0]._id,
+      metadata: {
+        totalCreated: inserted.length,
+        totalFailed: errors.length,
+        totalRequested: animalIds.length,
+        shearingType: sharedData.shearingType
+      }
+    });
+  }
+
+  return { created: inserted, errors };
+};
+
+const updateShearingRecord = async (id, data, userId) => {
+  const record = await ShearingRecord.findByIdAndUpdate(
+    id,
+    { $set: data },
+    { new: true, runValidators: true }
+  ).populate(['animal', 'technician']);
+
+  if (!record) throw ApiError.notFound('Shearing record not found');
+  
+  logAction({
+    userId,
+    action: 'Shearing Record Updated',
+    entityType: 'ShearingRecord',
+    entityId: record._id,
+    metadata: {
+      animalTagId: record.animalTagId,
+      shearingType: record.shearingType,
+      changes: data
+    }
+  });
+  
+  return record;
+};
+
+const deleteShearingRecord = async (id, userId) => {
+  const record = await ShearingRecord.findByIdAndDelete(id);
+  if (!record) throw ApiError.notFound('Shearing record not found');
+  
+  logAction({
+    userId,
+    action: 'Shearing Record Deleted',
+    entityType: 'ShearingRecord',
+    entityId: record._id,
+    metadata: {
+      animalTagId: record.animalTagId,
+      shearingType: record.shearingType
     }
   });
   
@@ -754,14 +1148,26 @@ module.exports = {
   // Weight Records
   getWeightRecords,
   createWeightRecord,
+  bulkCreateWeightRecords,
+  // Temperature Records
+  getTemperatureRecords,
+  createTemperatureRecord,
+  bulkCreateTemperatureRecords,
   // BCS Records
   getBcsRecords,
   createBcsRecord,
   // Hoof Records
   getHoofRecords,
   createHoofRecord,
+  bulkCreateHoofRecords,
   updateHoofRecord,
   deleteHoofRecord,
+  // Shearing Records
+  getShearingRecords,
+  createShearingRecord,
+  bulkCreateShearingRecords,
+  updateShearingRecord,
+  deleteShearingRecord,
   // Cure Tracking
   getCureTracking
 };

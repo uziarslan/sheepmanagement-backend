@@ -137,6 +137,16 @@ const HOOF_DIAGNOSIS = [
   'Other'
 ];
 
+const SHEARING_TYPES = [
+  'Full Body',
+  'Belly Only',
+  'Crutching',
+  'Wigging',
+  'Pre-Lambing',
+  'Routine',
+  'Other'
+];
+
 const VACCINATION_SCOPES = ['Pen', 'Individual', 'Multiple'];
 const DEWORMING_SCOPES = ['Shed', 'Individual Animal'];
 
@@ -224,6 +234,7 @@ module.exports = {
   DIAGNOSIS_TYPES,
   DEWORMING_TYPES,
   HOOF_DIAGNOSIS,
+  SHEARING_TYPES,
   VACCINATION_SCOPES,
   DEWORMING_SCOPES,
   CURE_STATUSES,

@@ -7,6 +7,7 @@ const {
   DEWORMING_TYPES,
   CURE_STATUSES,
   HOOF_DIAGNOSIS,
+  SHEARING_TYPES,
   BCS_VALUES
 } = require('../constants');
 
@@ -131,6 +132,18 @@ const createWeightRecord = {
   })
 };
 
+// Temperature Record validations
+const createTemperatureRecord = {
+  body: Joi.object().keys({
+    animal: Joi.string().hex().length(24).required(),
+    animalTagId: Joi.string(),
+    animalName: Joi.string(),
+    date: Joi.date().default(Date.now),
+    temperature: Joi.number().required().min(20).max(50),
+    notes: Joi.string().max(500).allow('', null)
+  })
+};
+
 // BCS Record validations
 const createBcsRecord = {
   body: Joi.object().keys({
@@ -171,6 +184,27 @@ const createHoofRecord = {
   })
 };
 
+const bulkCreateHoofRecords = {
+  body: Joi.object().keys({
+    animals: Joi.array().items(Joi.string().hex().length(24)).min(1).max(500).required(),
+    date: Joi.date().default(Date.now),
+    technician: Joi.string().hex().length(24).allow(null),
+    technicianName: Joi.string().allow('', null),
+    diagnosis: Joi.string().required().valid(...HOOF_DIAGNOSIS),
+    hoofDetails: Joi.array().items(
+      Joi.object().keys({
+        position: Joi.string().required().valid('Front Left', 'Front Right', 'Rear Left', 'Rear Right'),
+        condition: Joi.string().valid('Normal', 'Mild Issue', 'Moderate Issue', 'Severe Issue').default('Normal'),
+        trimmed: Joi.boolean().default(false),
+        notes: Joi.string().allow('', null)
+      })
+    ),
+    cost: Joi.number().min(0).default(0),
+    treatmentApplied: Joi.string().allow('', null),
+    comments: Joi.string().max(1000).allow('', null)
+  })
+};
+
 const updateHoofRecord = {
   params: Joi.object().keys({
     id: Joi.string().hex().length(24).required()
@@ -189,6 +223,84 @@ const updateHoofRecord = {
     nextCheckupDate: Joi.date().allow(null),
     comments: Joi.string().max(1000).allow('', null)
   }).min(1)
+};
+
+// Shearing Record validations
+const createShearingRecord = {
+  body: Joi.object().keys({
+    animal: Joi.string().hex().length(24).required(),
+    animalTagId: Joi.string(),
+    animalName: Joi.string(),
+    date: Joi.date().default(Date.now),
+    technician: Joi.string().hex().length(24).allow(null),
+    technicianName: Joi.string().allow('', null),
+    shearingType: Joi.string().required().valid(...SHEARING_TYPES),
+    woolWeight: Joi.number().min(0).default(0),
+    woolQuality: Joi.string().valid('Excellent', 'Good', 'Average', 'Poor').default('Good'),
+    cost: Joi.number().min(0).default(0),
+    nextShearingDate: Joi.date().allow(null),
+    comments: Joi.string().max(1000).allow('', null)
+  })
+};
+
+const bulkCreateShearingRecords = {
+  body: Joi.object().keys({
+    animals: Joi.array().items(Joi.string().hex().length(24)).min(1).max(500).required(),
+    date: Joi.date().default(Date.now),
+    technician: Joi.string().hex().length(24).allow(null),
+    technicianName: Joi.string().allow('', null),
+    shearingType: Joi.string().required().valid(...SHEARING_TYPES),
+    woolWeight: Joi.number().min(0).default(0),
+    woolQuality: Joi.string().valid('Excellent', 'Good', 'Average', 'Poor').default('Good'),
+    cost: Joi.number().min(0).default(0),
+    comments: Joi.string().max(1000).allow('', null)
+  })
+};
+
+const updateShearingRecord = {
+  params: Joi.object().keys({
+    id: Joi.string().hex().length(24).required()
+  }),
+  body: Joi.object().keys({
+    shearingType: Joi.string().valid(...SHEARING_TYPES),
+    woolWeight: Joi.number().min(0),
+    woolQuality: Joi.string().valid('Excellent', 'Good', 'Average', 'Poor'),
+    cost: Joi.number().min(0),
+    nextShearingDate: Joi.date().allow(null),
+    comments: Joi.string().max(1000).allow('', null)
+  }).min(1)
+};
+
+// Bulk Weight Record validations
+const bulkCreateWeightRecords = {
+  body: Joi.object().keys({
+    records: Joi.array().items(
+      Joi.object().keys({
+        animal: Joi.string().hex().length(24).required(),
+        animalTagId: Joi.string(),
+        animalName: Joi.string(),
+        date: Joi.date().default(Date.now),
+        weight: Joi.number().required().min(0.1),
+        notes: Joi.string().max(500).allow('', null)
+      })
+    ).min(1).max(500).required()
+  })
+};
+
+// Bulk Temperature Record validations
+const bulkCreateTemperatureRecords = {
+  body: Joi.object().keys({
+    records: Joi.array().items(
+      Joi.object().keys({
+        animal: Joi.string().hex().length(24).required(),
+        animalTagId: Joi.string(),
+        animalName: Joi.string(),
+        date: Joi.date().default(Date.now),
+        temperature: Joi.number().required().min(20).max(50),
+        notes: Joi.string().max(500).allow('', null)
+      })
+    ).min(1).max(500).required()
+  })
 };
 
 // Query validations for health records
@@ -211,8 +323,15 @@ module.exports = {
   updateTreatment,
   createDeworming,
   createWeightRecord,
+  createTemperatureRecord,
+  bulkCreateWeightRecords,
+  bulkCreateTemperatureRecords,
   createBcsRecord,
   createHoofRecord,
+  bulkCreateHoofRecords,
   updateHoofRecord,
+  createShearingRecord,
+  bulkCreateShearingRecords,
+  updateShearingRecord,
   getHealthRecords
 };
