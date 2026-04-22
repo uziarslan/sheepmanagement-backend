@@ -8,7 +8,15 @@ const BREED_TYPES = [
   'Teddy',
   'Barbari',
   'Nachi',
-  'Rakhshani'
+  'Rakhshani',
+  'Lohi',
+  'Dorper',
+  'Sannen',
+  'Boer',
+  'Mundri',
+  'Thalli',
+  'Cross',
+  'others'
 ];
 
 const ANIMAL_SUBCATEGORIES = [
