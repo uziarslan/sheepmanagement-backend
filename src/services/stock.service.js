@@ -83,7 +83,7 @@ const create = async (stockData, userId) => {
 
   // Deduct from capital: totalPrice + transportation + loadingUnloading (Infrastructure for Assets, Stock Purchase for others)
   try {
-    const capital = await Capital.findOne({ user: userId });
+    const capital = await Capital.findOne({});
     if (capital && totalCost > 0) {
       const isAsset = stockData.category === 'Assets';
       const txType = isAsset ? 'Infrastructure' : 'Stock Purchase';
@@ -129,20 +129,79 @@ const create = async (stockData, userId) => {
 
 /**
  * Update stock
+ *
+ * If totalPrice / packQuantity / unitSize change, the corresponding capital
+ * transaction is kept in sync so the deduction in the Capital page always
+ * matches the stock's current cost.
  */
 const update = async (id, updateData, userId) => {
-  // Load document to trigger pre-save hook
   const stock = await Stock.findById(id);
 
   if (!stock) {
     throw ApiError.notFound('Stock item not found');
   }
 
-  // Assign fields and save (triggers pre-save hooks)
+  const oldOpeningAmount = Number(stock.openingStockAmount) || 0;
+  const oldOpeningQty = Number(stock.openingStockQty) || 0;
+
+  // Apply incoming changes
   Object.assign(stock, updateData);
+
+  // The pre-save hook only recalculates totalQuantity/costPerUnit/openingStockQty
+  // for new documents. For edits, recalculate explicitly so the cost lines
+  // that drive capital stay accurate.
+  if (
+    updateData.totalPrice !== undefined ||
+    updateData.packQuantity !== undefined ||
+    updateData.unitSize !== undefined
+  ) {
+    const packQty = Number(stock.packQuantity) || 0;
+    const unitSize = Number(stock.unitSize) || 1;
+    const newTotalQty = packQty * unitSize;
+    const newTotalPrice = Number(stock.totalPrice) || 0;
+    const newRate = newTotalQty > 0 ? newTotalPrice / newTotalQty : 0;
+
+    stock.totalQuantity = newTotalQty;
+    stock.costPerUnit = newRate;
+    stock.openingRatePerUnit = newRate;
+    stock.openingStockAmount = newTotalPrice;
+    stock.openingStockQty = newTotalQty;
+
+    // Preserve consumption: keep consumed quantity intact, scale remaining to new opening qty.
+    const consumed = Math.max(0, oldOpeningQty - (Number(stock.currentQty) || 0));
+    stock.currentQty = Math.max(0, newTotalQty - consumed);
+  }
+
   await stock.save();
 
-  // Create audit log
+  // Sync capital: update the original purchase transaction amount + balances.
+  try {
+    const newAmount = Number(stock.openingStockAmount) || 0;
+    const delta = newAmount - oldOpeningAmount; // positive => more deducted, negative => refund
+    if (delta !== 0) {
+      const capital = await Capital.findOne({});
+      if (capital) {
+        const isAsset = stock.category === 'Assets';
+        const txType = isAsset ? 'Infrastructure' : 'Stock Purchase';
+        const tx = capital.history.find(
+          (t) => String(t.reference) === String(stock._id) && t.type === txType
+        );
+        if (tx) {
+          tx.amount = -newAmount;
+          tx.description = `Stock ${stock.productName} - cost updated to Rs.${newAmount.toLocaleString()} (was Rs.${oldOpeningAmount.toLocaleString()})`;
+          capital.availableAmount -= delta;
+          if (['Stock Purchase', 'Infrastructure'].includes(tx.type)) {
+            capital.investedAmount = Math.max(0, capital.investedAmount + delta);
+          }
+          capital.lastUpdated = new Date();
+          await capital.save();
+        }
+      }
+    }
+  } catch (err) {
+    logger.error('Failed to sync capital after stock update:', err);
+  }
+
   logAction({
     userId,
     action: 'Stock Updated',
@@ -159,16 +218,80 @@ const update = async (id, updateData, userId) => {
 };
 
 /**
- * Delete stock
+ * Delete stock and revert the capital impact.
+ *
+ * Refund rule (handles the consumed-stock edge case):
+ *   - If the stock has not been used at all, the original purchase transaction is
+ *     removed from capital history entirely and the full purchase cost is refunded.
+ *   - If part of the stock has been consumed, only the unused portion is refunded;
+ *     the original transaction is rewritten to reflect the cost of the consumed
+ *     portion only (a real expense that cannot be reversed).
+ *
+ *   refund         = currentQty * openingRatePerUnit
+ *   consumedCost   = (openingStockQty - currentQty) * openingRatePerUnit
+ *
+ * Because transportation/loading were rolled into totalPrice on create,
+ * openingRatePerUnit already represents the true per-unit cost including those.
  */
 const remove = async (id, userId) => {
-  const stock = await Stock.findByIdAndDelete(id);
+  const stock = await Stock.findById(id);
 
   if (!stock) {
     throw ApiError.notFound('Stock item not found');
   }
 
-  // Create audit log
+  const openingQty = Number(stock.openingStockQty) || 0;
+  const currentQty = Number(stock.currentQty) || 0;
+  const ratePerUnit = Number(stock.openingRatePerUnit) || 0;
+  const consumedQty = Math.max(0, openingQty - currentQty);
+  const consumedCost = consumedQty * ratePerUnit;
+  const refund = currentQty * ratePerUnit;
+
+  try {
+    const capital = await Capital.findOne({});
+    if (capital) {
+      const isAsset = stock.category === 'Assets';
+      const txType = isAsset ? 'Infrastructure' : 'Stock Purchase';
+      const tx = capital.history.find(
+        (t) => String(t.reference) === String(stock._id) && t.type === txType
+      );
+
+      if (tx) {
+        const originalAbs = Math.abs(tx.amount);
+        const isInvestmentType = ['Stock Purchase', 'Infrastructure'].includes(tx.type);
+
+        if (consumedQty <= 0) {
+          // Nothing was used — drop the transaction entirely and refund the full amount.
+          capital.availableAmount += originalAbs;
+          if (isInvestmentType) {
+            capital.investedAmount = Math.max(0, capital.investedAmount - originalAbs);
+          }
+          capital.history.pull(tx._id);
+        } else {
+          // Partial consumption — refund only the unused portion.
+          // Cap refund at the original transaction amount to avoid over-refunding
+          // if the rate has been edited upward post-consumption.
+          const refundClamped = Math.min(originalAbs, refund);
+          capital.availableAmount += refundClamped;
+          if (isInvestmentType) {
+            capital.investedAmount = Math.max(0, capital.investedAmount - refundClamped);
+          }
+          tx.amount = -consumedCost;
+          tx.description =
+            `Stock ${stock.productName} deleted - ${consumedQty} ${stock.unit} already consumed kept as expense, ` +
+            `${currentQty} ${stock.unit} unused refunded (Rs.${refundClamped.toLocaleString()})`;
+        }
+
+        capital.lastUpdated = new Date();
+        await capital.save();
+      }
+    }
+  } catch (err) {
+    logger.error('Failed to revert capital for stock deletion:', err);
+  }
+
+  await Stock.findByIdAndDelete(id);
+
   logAction({
     userId,
     action: 'Stock Deleted',
@@ -177,8 +300,11 @@ const remove = async (id, userId) => {
     metadata: {
       productName: stock.productName,
       category: stock.category,
-      quantity: stock.currentQty,
-      totalPrice: (stock.currentQty * stock.openingRatePerUnit)
+      openingQty,
+      currentQty,
+      consumedQty,
+      refundAmount: refund,
+      consumedCost
     }
   });
 

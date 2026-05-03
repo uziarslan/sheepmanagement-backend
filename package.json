@@ -9,7 +9,8 @@
     "test": "jest --coverage",
     "test:watch": "jest --watch",
     "lint": "eslint src/",
-    "lint:fix": "eslint src/ --fix"
+    "lint:fix": "eslint src/ --fix",
+    "migrate:single-farm": "node src/scripts/migrate-to-single-farm.js"
   },
   "keywords": [
     "sheep",

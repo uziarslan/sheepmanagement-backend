@@ -71,20 +71,18 @@ const capitalSchema = new mongoose.Schema(
       type: Date,
       default: Date.now
     },
+    // Legacy field — kept optional for backward compatibility with existing data.
+    // Capital is farm-wide (single deployment = single farm); not used for scoping queries.
     user: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',
-      required: true,
-      unique: true
+      required: false
     }
   },
   {
     timestamps: true
   }
 );
-
-// Indexes
-capitalSchema.index({ user: 1 });
 
 // Virtual for total income
 capitalSchema.virtual('totalIncome').get(function () {
@@ -270,13 +268,15 @@ capitalSchema.methods.setInitialCapital = async function (partner1, partner2, re
   return this.save();
 };
 
-// Static method to get or create capital for user
+// Static method to get or create the farm-wide capital singleton.
+// `userId` is accepted for signature compatibility but only used as `createdBy` audit
+// when the singleton is created for the first time.
 capitalSchema.statics.getOrCreate = async function (userId) {
-  let capital = await this.findOne({ user: userId });
-  
+  let capital = await this.findOne({});
+
   if (!capital) {
     capital = await this.create({
-      user: userId,
+      user: userId || undefined,
       totalCapital: 0,
       investedAmount: 0,
       availableAmount: 0,
@@ -285,13 +285,13 @@ capitalSchema.statics.getOrCreate = async function (userId) {
       history: []
     });
   }
-  
+
   return capital;
 };
 
-// Static method to get summary
-capitalSchema.statics.getSummary = async function (userId) {
-  const capital = await this.findOne({ user: userId });
+// Static method to get summary (farm-wide singleton)
+capitalSchema.statics.getSummary = async function (_userId) {
+  const capital = await this.findOne({});
   
   if (!capital) {
     return {

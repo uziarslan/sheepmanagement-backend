@@ -32,10 +32,12 @@ const liabilitySchema = new mongoose.Schema(
       type: Number,
       default: 0
     },
+    // Legacy field — kept optional. Liability is farm-wide
+    // (single deployment = single farm); not used for scoping queries.
     user: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',
-      required: true
+      required: false
     },
     createdBy: {
       type: mongoose.Schema.Types.ObjectId,
@@ -51,7 +53,6 @@ const liabilitySchema = new mongoose.Schema(
 liabilitySchema.index({ lenderName: 1 });
 liabilitySchema.index({ date: -1 });
 liabilitySchema.index({ type: 1 });
-liabilitySchema.index({ user: 1 });
 
 // Pre-save middleware
 // KNOWN LIMITATION (F-42): The balanceAfter field is denormalized and calculated at save-time.
