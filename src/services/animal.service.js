@@ -119,7 +119,7 @@ const create = async (animalData, userId) => {
 
   // Deduct from capital
   try {
-    const capital = await Capital.findOne({ user: userId });
+    const capital = await Capital.findOne({});
     if (capital && totalPurchaseCost > 0) {
       await capital.addTransaction(
         -totalPurchaseCost, // Negative because it's an investment/expense
@@ -257,7 +257,7 @@ const bulkCreate = async (animalsData, userId) => {
   // Deduct total from capital after all successful creations
   if (results.success.length > 0 && totalInvestment > 0) {
     try {
-      const capital = await Capital.findOne({ user: userId });
+      const capital = await Capital.findOne({});
       if (capital) {
         await capital.addTransaction(
           -totalInvestment,
