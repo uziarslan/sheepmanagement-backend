@@ -14,7 +14,7 @@ const get = async (userId) => {
  * Initialize capital (with partner subdivisions)
  */
 const initialize = async (userId, { partner1 = 0, partner2 = 0, retainedEarnings = 0 }) => {
-  let capital = await Capital.findOne({ user: userId });
+  let capital = await Capital.findOne({});
 
   if (capital && capital.history.length > 0) {
     throw ApiError.badRequest('Capital already initialized. Use update instead.');
@@ -40,7 +40,7 @@ const initialize = async (userId, { partner1 = 0, partner2 = 0, retainedEarnings
  * For type 'Additional Investment', investmentSubtype is required (Partner1, Partner2, or Retained Earnings)
  */
 const addTransaction = async (userId, amount, type, description, reference = null, investmentSubtype = null) => {
-  const capital = await Capital.findOne({ user: userId });
+  const capital = await Capital.findOne({});
 
   if (!capital) {
     throw ApiError.notFound('Capital not initialized. Please set initial capital first.');
@@ -93,7 +93,7 @@ const addTransaction = async (userId, amount, type, description, reference = nul
  * Get transaction history
  */
 const getTransactions = async (userId, query = {}) => {
-  const capital = await Capital.findOne({ user: userId });
+  const capital = await Capital.findOne({});
 
   if (!capital) {
     return { data: [], total: 0 };
@@ -144,7 +144,7 @@ const getSummary = async (userId) => {
  * Update transaction invoice URL
  */
 const updateTransactionInvoice = async (userId, transactionId, invoiceUrl) => {
-  const capital = await Capital.findOne({ user: userId });
+  const capital = await Capital.findOne({});
 
   if (!capital) {
     throw ApiError.notFound('Capital not found.');

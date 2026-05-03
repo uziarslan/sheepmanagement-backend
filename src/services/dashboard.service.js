@@ -28,8 +28,9 @@ const invalidateCache = (prefix) => {
 /**
  * Get dashboard statistics (cached 60 s per userId)
  */
-const getStats = async (userId) => {
-  const cacheKey = `stats_${userId}`;
+const getStats = async (_userId) => {
+  // Single deployment = single farm; stats are farm-wide, not per-user.
+  const cacheKey = `stats_farm`;
   const cached = getCached(cacheKey);
   if (cached) return cached;
   const [
@@ -50,7 +51,7 @@ const getStats = async (userId) => {
     Stock.countDocuments({ isActive: true }),
     Employee.countDocuments(),
     Employee.countDocuments({ status: 'Active' }),
-    Capital.findOne({ user: userId }),
+    Capital.findOne({}),
     Stock.countDocuments({
       isActive: true,
       $expr: { $lte: ['$currentQty', '$minStockLevel'] }
