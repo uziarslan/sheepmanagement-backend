@@ -1,4 +1,3 @@
-const mongoose = require('mongoose');
 const { Liability, Capital } = require('../models');
 const logger = require('../utils/logger');
 const { ApiError, getPaginationOptions, getSortOptions, getPaginationMeta, logAction } = require('../utils');
@@ -6,11 +5,12 @@ const { ApiError, getPaginationOptions, getSortOptions, getPaginationMeta, logAc
 /**
  * Get all liabilities with filters
  */
-const getAll = async (query, userId) => {
+const getAll = async (query, _userId) => {
   const { page, limit, skip } = getPaginationOptions(query);
   const sort = getSortOptions(query.sort || '-date');
 
-  const filter = { user: userId };
+  // Farm-wide: liabilities are shared across all users in this deployment.
+  const filter = {};
   if (query.lenderName) {
     filter.lenderName = new RegExp(query.lenderName, 'i');
   }
@@ -36,9 +36,9 @@ const getAll = async (query, userId) => {
 /**
  * Get liabilities by lender name (exact match, case-insensitive)
  */
-const getByLender = async (lenderName, userId) => {
+const getByLender = async (lenderName, _userId) => {
   const name = (lenderName || '').trim();
-  return Liability.find({ lenderName: { $regex: new RegExp(`^${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') }, user: userId })
+  return Liability.find({ lenderName: { $regex: new RegExp(`^${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') } })
     .sort({ date: -1 })
     .lean();
 };
@@ -46,8 +46,8 @@ const getByLender = async (lenderName, userId) => {
 /**
  * Get lender balances (outstanding per lender)
  */
-const getLenderBalances = async (userId) => {
-  const transactions = await Liability.find({ user: userId }).lean();
+const getLenderBalances = async (_userId) => {
+  const transactions = await Liability.find({}).lean();
 
   const balances = {};
   for (const t of transactions) {
@@ -69,19 +69,17 @@ const getLenderBalances = async (userId) => {
 /**
  * Get current outstanding for a lender
  */
-const getLenderOutstanding = async (lenderName, userId) => {
+const getLenderOutstanding = async (lenderName, _userId) => {
   const name = (lenderName || '').trim();
   const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const nameRegex = new RegExp(`^\\s*${escaped}\\s*$`, 'i');
-  // Aggregate pipelines don't auto-cast strings to ObjectId — cast explicitly
-  const userObjectId = new mongoose.Types.ObjectId(userId);
 
   const borrowed = await Liability.aggregate([
-    { $match: { lenderName: { $regex: nameRegex }, user: userObjectId, type: 'Borrowed' } },
+    { $match: { lenderName: { $regex: nameRegex }, type: 'Borrowed' } },
     { $group: { _id: null, total: { $sum: '$amount' } } }
   ]);
   const returned = await Liability.aggregate([
-    { $match: { lenderName: { $regex: nameRegex }, user: userObjectId, type: 'Returned' } },
+    { $match: { lenderName: { $regex: nameRegex }, type: 'Returned' } },
     { $group: { _id: null, total: { $sum: '$amount' } } }
   ]);
 
@@ -105,13 +103,12 @@ const create = async (liabilityData, userId) => {
 
   const liability = await Liability.create({
     ...liabilityData,
-    user: userId,
     createdBy: userId
   });
 
   // Update capital: Borrow -> add to balance, Return -> deduct
   try {
-    const capital = await Capital.findOne({ user: userId });
+    const capital = await Capital.findOne({});
     if (capital) {
       const amount = liabilityData.type === 'Borrowed' ? liabilityData.amount : -liabilityData.amount;
       const txType = liabilityData.type === 'Borrowed' ? 'Loan Borrowed' : 'Loan Returned';
@@ -145,7 +142,7 @@ const create = async (liabilityData, userId) => {
  * Delete liability (does not reverse capital - use with caution)
  */
 const remove = async (id, userId) => {
-  const liability = await Liability.findOne({ _id: id, user: userId });
+  const liability = await Liability.findOne({ _id: id });
   if (!liability) {
     throw ApiError.notFound('Liability record not found');
   }
@@ -168,8 +165,8 @@ const remove = async (id, userId) => {
 /**
  * Get summary (totals from all transactions; date filter optional for reporting)
  */
-const getSummary = async (userId, startDate, endDate) => {
-  const match = { user: userId };
+const getSummary = async (_userId, startDate, endDate) => {
+  const match = {};
   if (startDate || endDate) {
     match.date = {};
     if (startDate) match.date.$gte = new Date(startDate);
