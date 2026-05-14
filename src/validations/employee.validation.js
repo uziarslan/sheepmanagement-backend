@@ -1,5 +1,12 @@
 const Joi = require('joi');
-const { DEPARTMENTS, DESIGNATIONS, BANKS, EMPLOYEE_STATUSES } = require('../constants');
+const {
+  DEPARTMENTS,
+  DESIGNATIONS,
+  BANKS,
+  EMPLOYEE_STATUSES,
+  EMPLOYEE_SEPARATED_STATUSES
+} = require('../constants');
+const { STRONG_PASSWORD } = require('./password');
 
 const cnicRegex = /^\d{5}-\d{7}-\d{1}$/;
 
@@ -25,7 +32,13 @@ const createEmployee = {
     }).allow(null),
     notes: Joi.string().max(1000).allow('', null),
     createCredentials: Joi.boolean().default(false),
-    loginPassword: Joi.string().min(6).max(128).allow('', null)
+    // STRONG_PASSWORD applied when createCredentials is true; left optional
+    // when not creating an employee login account.
+    loginPassword: Joi.alternatives().conditional('createCredentials', {
+      is: true,
+      then: STRONG_PASSWORD.required(),
+      otherwise: Joi.string().allow('', null)
+    })
   })
 };
 
@@ -70,12 +83,30 @@ const getEmployees = {
   })
 };
 
+const separateEmployee = {
+  params: Joi.object().keys({
+    id: Joi.string().hex().length(24).required()
+  }),
+  body: Joi.object().keys({
+    status: Joi.string().required().valid(...EMPLOYEE_SEPARATED_STATUSES),
+    dateOfLeaving: Joi.date().max('now').default(Date.now),
+    leavingReason: Joi.string().max(1000).allow('', null),
+    writeOffAdvance: Joi.boolean().default(false)
+  })
+};
+
+const reactivateEmployee = {
+  params: Joi.object().keys({
+    id: Joi.string().hex().length(24).required()
+  })
+};
+
 const resetEmployeePassword = {
   params: Joi.object().keys({
     id: Joi.string().hex().length(24).required()
   }),
   body: Joi.object().keys({
-    newPassword: Joi.string().required().min(6).max(128),
+    newPassword: STRONG_PASSWORD.required(),
     confirmPassword: Joi.string().required().valid(Joi.ref('newPassword'))
       .messages({ 'any.only': 'Passwords do not match' })
   })
@@ -85,5 +116,7 @@ module.exports = {
   createEmployee,
   updateEmployee,
   getEmployees,
-  resetEmployeePassword
+  resetEmployeePassword,
+  separateEmployee,
+  reactivateEmployee
 };

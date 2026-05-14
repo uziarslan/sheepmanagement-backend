@@ -10,7 +10,8 @@
     "test:watch": "jest --watch",
     "lint": "eslint src/",
     "lint:fix": "eslint src/ --fix",
-    "migrate:single-farm": "node src/scripts/migrate-to-single-farm.js"
+    "migrate:single-farm": "node src/scripts/migrate-to-single-farm.js",
+    "reconcile:capital": "node src/scripts/reconcile-capital.js"
   },
   "keywords": [
     "sheep",

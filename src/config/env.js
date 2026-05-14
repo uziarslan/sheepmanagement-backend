@@ -30,12 +30,24 @@ const env = {
   // Logging
   logLevel: process.env.LOG_LEVEL || 'info',
 
-  // Cloudinary
+  // Cloudinary. `folder` namespaces uploads per deployment so multiple farms
+  // sharing the same Cloudinary account don't co-mingle invoices. Defaults to
+  // `sheep-management/<FARM_KEY>/invoices`; if no FARM_KEY is set, falls back
+  // to the legacy shared folder (kept for backward compat).
   cloudinary: {
     cloudName: process.env.CLOUDINARY_CLOUD_NAME || '',
     apiKey: process.env.CLOUDINARY_API_KEY || '',
-    apiSecret: process.env.CLOUDINARY_API_SECRET || ''
+    apiSecret: process.env.CLOUDINARY_API_SECRET || '',
+    invoiceFolder: process.env.CLOUDINARY_INVOICE_FOLDER
+      || (process.env.FARM_KEY
+        ? `sheep-management/${String(process.env.FARM_KEY).replace(/[^A-Za-z0-9_-]/g, '_')}/invoices`
+        : 'sheep-management/invoices')
   },
+
+  // FARM_KEY is a stable per-deployment identifier (e.g. "green-pastures").
+  // It is consumed by anything that needs to namespace shared external storage
+  // (Cloudinary, S3, etc.) so two farm deployments don't collide.
+  farmKey: process.env.FARM_KEY || null,
 
   // Helpers
   isDevelopment: process.env.NODE_ENV === 'development',

@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { feedController } = require('../controllers');
-const { authenticate, authorize, validate } = require('../middleware');
+const { authenticate, authorize, validate, idempotency } = require('../middleware');
 const { feedValidation } = require('../validations');
 
 // All routes require authentication
@@ -50,6 +50,7 @@ router.get(
 router.post(
   '/applications/range',
   authorize('Admin', 'Manager', 'Employee'),
+  idempotency,
   feedController.applyRecipeRange
 );
 
@@ -57,6 +58,7 @@ router.post(
 router.post(
   '/applications',
   authorize('Admin', 'Manager', 'Employee'),
+  idempotency,
   validate(feedValidation.applyRecipe),
   feedController.applyRecipe
 );

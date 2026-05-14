@@ -1,28 +1,40 @@
 const { AuditLog } = require('../models');
 const logger = require('./logger');
+const { getRequest } = require('./requestContext');
 
 /**
  * Non-blocking audit logger.
  * Failures are logged but do not affect the main request flow.
+ *
+ * AL2 (Sprint 4): if `req` is not passed explicitly, falls back to the live
+ * request stashed in AsyncLocalStorage by requestContextMiddleware. This is
+ * how service-layer callers (which never had access to `req`) now get IP and
+ * userAgent recorded without changing their signatures.
  */
 const logAction = ({ req, userId, action, entityType, entityId, metadata }) => {
   try {
-    const resolvedUserId =
-      userId || (req && req.user ? req.user.id || req.user._id : null);
+    const effectiveReq = req || getRequest();
 
-    // P6-06 / F-69: Warn when financial/critical operations have no audit trail owner
+    const resolvedUserId =
+      userId
+      || (effectiveReq && effectiveReq.user
+        ? effectiveReq.user.id || effectiveReq.user._id
+        : null);
+
     if (!resolvedUserId) {
       logger.warn(`Audit log missing userId for action: ${action} on ${entityType || 'unknown'}`);
     }
 
     const ip =
-      (req &&
-        (req.ip ||
-          (req.headers && (req.headers['x-forwarded-for'] || '')).split(',')[0])) ||
-      null;
+      (effectiveReq
+        && (effectiveReq.ip
+          || (effectiveReq.headers
+            && (effectiveReq.headers['x-forwarded-for'] || '')
+          ).split(',')[0]))
+      || null;
 
     const userAgent =
-      (req && req.headers && req.headers['user-agent']) || null;
+      (effectiveReq && effectiveReq.headers && effectiveReq.headers['user-agent']) || null;
 
     AuditLog.create({
       user: resolvedUserId,

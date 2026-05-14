@@ -73,9 +73,12 @@ const adjustStock = {
     id: Joi.string().hex().length(24).required()
   }),
   body: Joi.object().keys({
-    quantity: Joi.number().required(),
+    quantity: Joi.number().required().greater(0),
     type: Joi.string().required().valid('add', 'deduct'),
-    reason: Joi.string().max(500).allow('', null)
+    // Reason is mandatory — adjustments bypass the normal stock-flow audit
+    // (no recipe, no application), so the written-down reason is the only
+    // record of WHY inventory changed.
+    reason: Joi.string().trim().min(3).max(500).required()
   })
 };
 

@@ -2,6 +2,7 @@ const { authenticate, authorize, optionalAuth } = require('./auth.middleware');
 const { errorConverter, errorHandler, notFoundHandler } = require('./errorHandler');
 const validate = require('./validate');
 const { apiLimiter, authLimiter, createLimiter } = require('./rateLimiter');
+const idempotency = require('./idempotency');
 
 module.exports = {
   authenticate,
@@ -13,5 +14,6 @@ module.exports = {
   validate,
   apiLimiter,
   authLimiter,
-  createLimiter
+  createLimiter,
+  idempotency
 };

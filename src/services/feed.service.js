@@ -1,6 +1,14 @@
 const { FeedRecipe, FeedApplication, Stock, Animal, Pen } = require('../models');
 const logger = require('../utils/logger');
-const { ApiError, getPaginationOptions, getSortOptions, getPaginationMeta, logAction } = require('../utils');
+const {
+  ApiError,
+  getPaginationOptions,
+  getSortOptions,
+  getPaginationMeta,
+  logAction,
+  withTransaction,
+  sampleActiveAnimal
+} = require('../utils');
 
 // ============ RECIPE SERVICES ============
 
@@ -165,9 +173,21 @@ const updateRecipe = async (id, data, userId) => {
 };
 
 const deleteRecipe = async (id, userId) => {
-  const recipe = await FeedRecipe.findByIdAndDelete(id);
+  const recipe = await FeedRecipe.findById(id);
   if (!recipe) throw ApiError.notFound('Recipe not found');
-  
+
+  // Block deletion when historical applications reference this recipe.
+  // Mark inactive via update if the recipe should be retired but kept on file.
+  const usageCount = await FeedApplication.countDocuments({ recipe: id });
+  if (usageCount > 0) {
+    throw ApiError.badRequest(
+      `Cannot delete recipe "${recipe.name}" — it has been applied ${usageCount} time(s). ` +
+      `Set isActive=false to retire it without losing history.`
+    );
+  }
+
+  await FeedRecipe.findByIdAndDelete(id);
+
   // Create audit log
   logAction({
     userId,
@@ -180,7 +200,7 @@ const deleteRecipe = async (id, userId) => {
       totalCost: recipe.totalCost
     }
   });
-  
+
   return recipe;
 };
 
@@ -227,96 +247,166 @@ const applyRecipe = async (data, userId) => {
   const pen = await Pen.findById(data.pen);
   if (!pen) throw ApiError.notFound('Pen not found');
 
-  // Get animal count in pen
-  const animalCount = await Animal.countDocuments({ 
-    pen: data.pen, 
-    status: 'Active' 
+  // Get animal count in pen (snapshot). Cost-per-animal is computed AFTER
+  // FIFO settles the actual spend, since batch rates may vary.
+  const animalCount = await Animal.countDocuments({
+    pen: data.pen,
+    status: 'Active'
   });
 
-  // ── FIFO stock validation & deduction ──────────────────────────────────────
-  // For each recipe ingredient, find ALL stock entries with the same productName
-  // and openingRatePerUnit, sorted oldest purchaseDate first, and drain them FIFO.
-  // We collect deduction ops here and execute them after the application is saved.
-  const deductionOps = []; // [{ stockDoc, deductQty }]
+  const application = await withTransaction(async (session) => {
+    // ── FIFO stock validation & deduction (price-tolerant) ────────────────
+    // Sprint 3 (F4/S6): FIFO no longer filters by openingRatePerUnit. A stock
+    // price edit after recipe creation used to break apply-recipe. Now we
+    // match by productName + category, sort by purchaseDate, and compute
+    // actual cost from each batch's own rate. The application's totalCost
+    // reflects ACTUAL spend, which may differ from recipe.totalCost.
+    //
+    // Each batch may be drained with an atomic conditional decrement so two
+    // parallel callers can't both drive a balance negative.
+    const ingredientCostBreakdown = [];
+    let actualTotalCost = 0;
 
-  for (const ing of recipe.ingredients) {
-    const ingName = ing.name;
-    // Load a reference stock to get the rate
-    const refStock = await Stock.findById(ing.stock);
-    if (!refStock) {
-      throw ApiError.notFound(`Stock item "${ingName}" not found`);
+    for (const ing of recipe.ingredients) {
+      const ingName = ing.name;
+      const refStock = await Stock.findById(ing.stock).session(session || null);
+      if (!refStock) {
+        throw ApiError.notFound(`Stock item "${ingName}" not found`);
+      }
+
+      const matchingStocks = await Stock.find({
+        productName: { $regex: new RegExp(`^${ingName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') },
+        category: refStock.category
+      })
+        .sort({ purchaseDate: 1, createdAt: 1 })
+        .session(session || null);
+
+      const totalAvailable = matchingStocks.reduce((s, st) => s + (st.currentQty || 0), 0);
+      if (totalAvailable < ing.quantity) {
+        throw ApiError.badRequest(
+          `Insufficient stock for ${ingName}. Total available: ${totalAvailable} ${ing.unit}, needed: ${ing.quantity}`
+        );
+      }
+
+      let remaining = ing.quantity;
+      let ingActualCost = 0;
+      const batchTrail = []; // { stockId, qty, rate, cost }
+
+      for (const st of matchingStocks) {
+        if (remaining <= 0) break;
+        const onHand = st.currentQty || 0;
+        if (onHand <= 0) continue;
+        const deductQty = Math.min(remaining, onHand);
+        const batchRate = Number(st.openingRatePerUnit) || 0;
+
+        const decResult = await Stock.findOneAndUpdate(
+          { _id: st._id, currentQty: { $gte: deductQty } },
+          { $inc: { currentQty: -deductQty } },
+          { new: true, ...(session ? { session } : {}) }
+        );
+        if (!decResult) {
+          throw ApiError.badRequest(
+            `Stock ${st.productName} was drained concurrently; please retry.`
+          );
+        }
+        const batchCost = deductQty * batchRate;
+        ingActualCost += batchCost;
+        batchTrail.push({
+          stockId: st._id,
+          qty: deductQty,
+          rate: batchRate,
+          cost: batchCost
+        });
+        remaining -= deductQty;
+      }
+
+      if (remaining > 0) {
+        throw ApiError.badRequest(
+          `Could not fully deduct ${ing.quantity} ${ing.unit} of ${ingName} (concurrent contention).`
+        );
+      }
+
+      actualTotalCost += ingActualCost;
+      ingredientCostBreakdown.push({
+        stock: ing.stock,
+        name: ing.name,
+        unit: ing.unit,
+        quantity: ing.quantity,
+        // For backward compat: rate is the weighted-average actual rate.
+        rate: ing.quantity > 0 ? ingActualCost / ing.quantity : (ing.ratePerUnit || 0),
+        total: ingActualCost,
+        batches: batchTrail
+      });
     }
-    const ingRate = refStock.openingRatePerUnit;
 
-    // Fetch all stock docs with same productName + rate, sorted oldest first
-    const matchingStocks = await Stock.find({
-      productName: { $regex: new RegExp(`^${ingName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') },
-      openingRatePerUnit: ingRate,
-      category: refStock.category
-    }).sort({ purchaseDate: 1 });
+    // Recompute cost-per-animal off the ACTUAL spend (not the recipe snapshot).
+    const actualCostPerAnimal = animalCount > 0
+      ? Math.floor(actualTotalCost * 100 / animalCount) / 100
+      : 0;
+    const actualRemainder = animalCount > 0
+      ? Math.round((actualTotalCost - (actualCostPerAnimal * animalCount)) * 100) / 100
+      : 0;
 
-    logger.info(`[feed.service] FIFO for "${ingName}" rate=${ingRate}: found ${matchingStocks.length} entries, need ${ing.quantity}`);
+    // Create application
+    const applicationData = {
+      recipe: recipe._id,
+      recipeName: recipe.name,
+      pen: pen._id,
+      penName: pen.name,
+      date: data.date || new Date(),
+      animalCount,
+      ingredients: ingredientCostBreakdown.map(b => ({
+        stock: b.stock,
+        name: b.name,
+        unit: b.unit,
+        quantity: b.quantity,
+        rate: b.rate,
+        total: b.total
+      })),
+      totalCost: actualTotalCost,
+      costPerAnimal: actualCostPerAnimal,
+      notes: data.notes,
+      appliedBy: userId,
+      createdBy: userId
+    };
 
-    // Check combined availability
-    const totalAvailable = matchingStocks.reduce((s, st) => s + (st.currentQty || 0), 0);
-    if (totalAvailable < ing.quantity) {
-      throw ApiError.badRequest(
-        `Insufficient stock for ${ingName}. Total available: ${totalAvailable} ${ing.unit}, needed: ${ing.quantity}`
+    const [created] = await FeedApplication.create(
+      [applicationData],
+      session ? { session } : {}
+    );
+
+    // Recipe counter (moved out of pre-save hook so it shares the session).
+    await FeedRecipe.findByIdAndUpdate(
+      recipe._id,
+      { $inc: { appliedCount: 1 }, $set: { lastAppliedDate: new Date() } },
+      session ? { session } : {}
+    );
+
+    // Distribute cost across active animals in pen using ACTUAL spend.
+    if (animalCount > 0 && actualCostPerAnimal > 0) {
+      await Animal.updateMany(
+        { pen: pen._id, status: 'Active' },
+        { $inc: { totalFeedCost: actualCostPerAnimal } },
+        session ? { session } : {}
       );
+      if (actualRemainder > 0) {
+        // X4 (Sprint 5): pick a RANDOM active animal in the pen for the
+        // remainder paisa rather than always the oldest — eliminates
+        // first-animal cost-bias drift over many applications.
+        const picked = await sampleActiveAnimal({ pen: pen._id }, session);
+        if (picked) {
+          await Animal.findByIdAndUpdate(
+            picked._id,
+            { $inc: { totalFeedCost: actualRemainder } },
+            session ? { session } : {}
+          );
+        }
+      }
     }
 
-    // Build FIFO deduction splits
-    let remaining = ing.quantity;
-    for (const st of matchingStocks) {
-      if (remaining <= 0) break;
-      if ((st.currentQty || 0) <= 0) continue;
-      const deductQty = Math.min(remaining, st.currentQty);
-      deductionOps.push({ stockDoc: st, deductQty });
-      logger.info(`[feed.service]   → deduct ${deductQty} from stock ${st._id} (purchaseDate=${st.purchaseDate}, currentQty=${st.currentQty})`);
-      remaining -= deductQty;
-    }
-  }
+    return created;
+  });
 
-  // Calculate cost per animal with proper float rounding
-  let costPerAnimal = 0;
-  if (animalCount > 0) {
-    costPerAnimal = Math.floor(recipe.totalCost * 100 / animalCount) / 100;
-  }
-
-  // Prepare application data
-  const applicationData = {
-    recipe: recipe._id,
-    recipeName: recipe.name,
-    pen: pen._id,
-    penName: pen.name,
-    date: data.date || new Date(),
-    animalCount,
-    ingredients: recipe.ingredients.map(ing => ({
-      stock: ing.stock,
-      name: ing.name,
-      unit: ing.unit,
-      quantity: ing.quantity,
-      rate: ing.ratePerUnit,
-      total: ing.total
-    })),
-    totalCost: recipe.totalCost,
-    costPerAnimal,
-    notes: data.notes,
-    appliedBy: userId,
-    createdBy: userId
-  };
-
-  // P1-05 FIX: Execute ALL stock deductions FIRST, before saving the application.
-  // If any deduction fails here, no application record is created — no partial commit.
-  for (const { stockDoc, deductQty } of deductionOps) {
-    stockDoc.currentQty -= deductQty;
-    await stockDoc.save();
-  }
-
-  // Only save application AFTER all deductions succeed
-  const application = await FeedApplication.create(applicationData);
-
-  // Create audit log
   logAction({
     userId,
     action: 'Feed Recipe Applied',
@@ -325,10 +415,11 @@ const applyRecipe = async (data, userId) => {
     metadata: {
       recipeName: recipe.name,
       penName: pen.name,
-      animalCount: animalCount,
+      animalCount,
       ingredientCount: recipe.ingredients.length,
-      totalCost: recipe.totalCost,
-      costPerAnimal
+      recipeEstimatedCost: recipe.totalCost,
+      actualTotalCost: application.totalCost,
+      costPerAnimal: application.costPerAnimal
     }
   });
 

@@ -1,6 +1,14 @@
 const { Advance, Employee } = require('../models');
 const logger = require('../utils/logger');
-const { ApiError, getPaginationOptions, getSortOptions, getPaginationMeta } = require('../utils');
+const {
+  ApiError,
+  getPaginationOptions,
+  getSortOptions,
+  getPaginationMeta,
+  withTransaction,
+  atomic,
+  logAction
+} = require('../utils');
 
 /**
  * Get all advances with filters
@@ -50,75 +58,110 @@ const getByEmployee = async (employeeId) => {
 };
 
 /**
- * Create advance record
+ * Create advance record.
+ * Atomic: advance write + employee balance update commit together (AD1 fix).
+ * Balance update uses an atomic conditional decrement for Returned advances,
+ * so two parallel returns cannot both pass the balance check.
  */
 const create = async (advanceData, userId) => {
-  // Validate employee exists
+  // Validate employee exists (also gives us name for error messages)
   const employee = await Employee.findById(advanceData.employee);
   if (!employee) {
     throw ApiError.notFound('Employee not found');
   }
 
-  // Validate return amount
-  if (advanceData.type === 'Returned' && advanceData.amount > employee.advanceBalance) {
-    throw ApiError.badRequest(
-      `Return amount exceeds current balance. Available: ${employee.advanceBalance}`
-    );
-  }
+  const advance = await withTransaction(async (session) => {
+    let newBalance;
+    if (advanceData.type === 'Given') {
+      const updated = await atomic.atomicAddAdvance(
+        advanceData.employee,
+        advanceData.amount,
+        session
+      );
+      newBalance = updated.advanceBalance;
+    } else {
+      // 'Returned' — conditional decrement; throws if exceeds balance.
+      const updated = await atomic.atomicDeductAdvance(
+        advanceData.employee,
+        advanceData.amount,
+        session
+      );
+      newBalance = updated.advanceBalance;
+    }
 
-  const advance = await Advance.create({
-    ...advanceData,
-    approvedBy: userId,
-    createdBy: userId
+    const [created] = await Advance.create(
+      [{
+        ...advanceData,
+        balanceAfter: newBalance,
+        approvedBy: userId,
+        createdBy: userId
+      }],
+      session ? { session } : {}
+    );
+
+    return created;
   });
 
-  // Update employee balance in service layer (after advance is created)
-  try {
-    if (advanceData.type === 'Given') {
-      employee.advanceBalance += advanceData.amount;
-    } else {
-      employee.advanceBalance -= advanceData.amount;
-    }
-    advance.balanceAfter = employee.advanceBalance;
-    await employee.save();
-    await advance.save();
-  } catch (err) {
-    // If balance update fails, still return the advance
-    logger.error('Failed to update employee balance:', err.message || err);
-  }
-
-  // Populate for response (include dateOfJoining so tenureMonths virtual can compute)
   await advance.populate('employee', 'name cnic department advanceBalance dateOfJoining');
+
+  logAction({
+    userId,
+    action: advance.type === 'Given' ? 'Advance Given' : 'Advance Returned',
+    entityType: 'Advance',
+    entityId: advance._id,
+    metadata: {
+      employeeId: advance.employee?._id || advance.employee,
+      employeeName: advance.employee?.name,
+      amount: advance.amount,
+      type: advance.type,
+      balanceAfter: advance.balanceAfter
+    }
+  });
 
   return advance;
 };
 
-const remove = async (id) => {
+const remove = async (id, userId) => {
   const advance = await Advance.findById(id);
 
   if (!advance) {
     throw ApiError.notFound('Advance record not found');
   }
 
-  // Reverse employee advance balance before deleting (P1-11 / F-26)
-  try {
-    const employee = await Employee.findById(advance.employee);
-    if (employee) {
-      if (advance.type === 'Given') {
-        // Advance was given earlier, so subtract it now to reverse
-        employee.advanceBalance = Math.max(0, (employee.advanceBalance || 0) - advance.amount);
-      } else {
-        // Advance was returned earlier, so add it back to reverse
-        employee.advanceBalance = (employee.advanceBalance || 0) + advance.amount;
+  await withTransaction(async (session) => {
+    if (advance.type === 'Given') {
+      // Reversing a Given advance = subtract from balance. Clamp at 0 via
+      // findOneAndUpdate filter: only decrement if balance is large enough.
+      // If the employee has already used the advance, the reversal is partial.
+      const employee = await Employee.findById(advance.employee).session(session || null);
+      if (employee) {
+        const newBal = Math.max(0, (employee.advanceBalance || 0) - advance.amount);
+        await Employee.findByIdAndUpdate(
+          advance.employee,
+          { $set: { advanceBalance: newBal } },
+          session ? { session } : {}
+        );
       }
-      await employee.save();
+    } else {
+      // Reversing a Returned advance = add it back.
+      await atomic.atomicAddAdvance(advance.employee, advance.amount, session);
     }
-  } catch (err) {
-    // Log error but continue with deletion
-    logger.error('Failed to reverse employee advance balance:', err.message || err);
-  }
 
-  await Advance.findByIdAndDelete(id);
+    await Advance.findByIdAndDelete(id, session ? { session } : {});
+  });
+
+  logAction({
+    userId,
+    action: 'Advance Deleted',
+    entityType: 'Advance',
+    entityId: advance._id,
+    metadata: {
+      employeeId: advance.employee,
+      amount: advance.amount,
+      type: advance.type
+    }
+  });
+
   return advance;
 };
 

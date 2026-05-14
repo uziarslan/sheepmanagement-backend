@@ -1,6 +1,13 @@
 const { Stock, VaccineRecipe, VaccineApplication, Animal, Pen } = require('../models');
 const logger = require('../utils/logger');
-const { ApiError, getPaginationOptions, getSortOptions, getPaginationMeta, logAction } = require('../utils');
+const {
+  ApiError,
+  getPaginationOptions,
+  getSortOptions,
+  getPaginationMeta,
+  logAction,
+  withTransaction
+} = require('../utils');
 
 // ============ VACCINE RECIPE SERVICES ============
 
@@ -271,85 +278,105 @@ const applyVaccine = async (data, userId) => {
     throw ApiError.badRequest('No animals found for vaccination');
   }
 
-  // Calculate medicine quantities based on recipe and animal count
+  // Calculate medicine quantities based on recipe and animal count.
+  // Snapshot rates outside the txn since they're read-only.
   let totalCost = 0;
   const processedMedicines = [];
-
   for (const recipeMedicine of vaccineRecipe.medicines) {
     const medicine = await Stock.findById(recipeMedicine.medicine);
     if (!medicine) {
       throw ApiError.notFound(`Medicine ${recipeMedicine.name} not found`);
     }
-
-    // Calculate required quantity (recipe quantity * animal count)
     const requiredQuantity = recipeMedicine.quantity * animalCount;
-
-    // Check if enough stock available
-    if (medicine.currentQty < requiredQuantity) {
-      throw ApiError.badRequest(
-        `Insufficient stock for ${medicine.productName}. Available: ${medicine.currentQty} ${medicine.unit}, Required: ${requiredQuantity} ${medicine.unit}`
-      );
-    }
-
-    // Calculate cost
     const rate = medicine.costPerUnit || medicine.openingRatePerUnit || 0;
     const total = requiredQuantity * rate;
-
     processedMedicines.push({
       medicine: medicine._id,
       medicineName: medicine.productName,
       quantity: requiredQuantity,
       unit: medicine.unit,
-      rate: rate,
-      total: total
+      rate,
+      total
     });
-
     totalCost += total;
-
-    // Update stock quantity
-    medicine.currentQty -= requiredQuantity;
-    await medicine.save();
   }
 
-  // Create application record
-  const application = await VaccineApplication.create({
-    ...rest,
-    vaccineRecipe: vaccineRecipeId,
-    vaccineName: vaccineRecipe.name,
-    disease: vaccineRecipe.disease,
-    scope,
-    pen: scope === 'Pen' ? pen : undefined,
-    penName: scope === 'Pen' ? penName : undefined,
-    animal: scope === 'Individual' ? animal : undefined,
-    animals: scope === 'Multiple' ? animals : undefined,
-    animalCount,
-    medicineUsed: processedMedicines,
-    totalCost,
-    createdBy: userId
+  const application = await withTransaction(async (session) => {
+    // ── Atomic stock deductions ──────────────────────────────────────────
+    // Single conditional findOneAndUpdate per medicine. If any fails (because
+    // a concurrent caller drained it), the transaction aborts and prior
+    // deductions roll back (on replica set).
+    for (const med of processedMedicines) {
+      const updated = await Stock.findOneAndUpdate(
+        { _id: med.medicine, currentQty: { $gte: med.quantity } },
+        { $inc: { currentQty: -med.quantity } },
+        { new: true, ...(session ? { session } : {}) }
+      );
+      if (!updated) {
+        const probe = await Stock.findById(med.medicine, 'productName currentQty unit')
+          .session(session || null)
+          .lean();
+        throw ApiError.badRequest(
+          `Insufficient stock for ${probe?.productName || med.medicineName}. ` +
+          `Available: ${probe?.currentQty ?? 0} ${probe?.unit || med.unit}, ` +
+          `Required: ${med.quantity}`
+        );
+      }
+    }
+
+    // Create application
+    const [created] = await VaccineApplication.create(
+      [{
+        ...rest,
+        vaccineRecipe: vaccineRecipeId,
+        vaccineName: vaccineRecipe.name,
+        disease: vaccineRecipe.disease,
+        scope,
+        pen: scope === 'Pen' ? pen : undefined,
+        penName: scope === 'Pen' ? penName : undefined,
+        animal: scope === 'Individual' ? animal : undefined,
+        animals: scope === 'Multiple' ? animals : undefined,
+        animalCount,
+        medicineUsed: processedMedicines,
+        totalCost,
+        createdBy: userId
+      }],
+      session ? { session } : {}
+    );
+
+    // Recipe counter (atomic)
+    await VaccineRecipe.findByIdAndUpdate(
+      vaccineRecipeId,
+      { $inc: { appliedCount: 1 } },
+      session ? { session } : {}
+    );
+
+    // Distribute cost across the targeted animals.
+    if (totalCost > 0 && animalCount > 0) {
+      const costPerAnimal = Math.floor((totalCost / animalCount) * 100) / 100;
+      const remainder = Math.round((totalCost - (costPerAnimal * animalCount)) * 100) / 100;
+      const animalIds = targetAnimals.map(a => a._id);
+      await Animal.updateMany(
+        { _id: { $in: animalIds }, status: 'Active' },
+        { $inc: { totalVaccinationCost: costPerAnimal } },
+        session ? { session } : {}
+      );
+      if (remainder > 0 && animalIds.length > 0) {
+        // X4 (Sprint 5): random index in animalIds rather than always [0].
+        // Math.random is fine here — we're distributing rounding paisa, not
+        // doing crypto.
+        const pickIdx = Math.floor(Math.random() * animalIds.length);
+        await Animal.findByIdAndUpdate(
+          animalIds[pickIdx],
+          { $inc: { totalVaccinationCost: remainder } },
+          session ? { session } : {}
+        );
+      }
+    }
+
+    return created;
   });
 
-  // Update vaccine recipe applied count
-  vaccineRecipe.appliedCount += 1;
-  await vaccineRecipe.save();
-
-  // Distribute vaccination cost to animals with proper rounding
-  if (totalCost > 0 && animalCount > 0) {
-    const costPerAnimal = Math.floor((totalCost / animalCount) * 100) / 100;
-    const remainder = Math.round((totalCost - (costPerAnimal * animalCount)) * 100) / 100;
-    const animalIds = targetAnimals.map(a => a._id);
-    await Animal.updateMany(
-      { _id: { $in: animalIds }, status: 'Active' },
-      { $inc: { totalVaccinationCost: costPerAnimal } }
-    );
-    // Add remainder to first animal
-    if (remainder > 0 && animalIds.length > 0) {
-      await Animal.findByIdAndUpdate(animalIds[0], {
-        $inc: { totalVaccinationCost: remainder }
-      });
-    }
-  }
-
-  // Create audit log
   logAction({
     userId,
     action: 'Vaccine Applied',
@@ -358,10 +385,10 @@ const applyVaccine = async (data, userId) => {
     metadata: {
       vaccineName: vaccineRecipe.name,
       disease: vaccineRecipe.disease,
-      scope: scope,
-      animalCount: animalCount,
+      scope,
+      animalCount,
       penName: penName || 'N/A',
-      totalCost: totalCost,
+      totalCost,
       medicineCount: processedMedicines.length
     }
   });
@@ -393,59 +420,57 @@ const deleteApplication = async (id, userId) => {
   const application = await VaccineApplication.findById(id);
   if (!application) throw ApiError.notFound('Vaccination application not found');
 
-  // Restore stock quantities
-  for (const med of application.medicineUsed) {
-    const medicine = await Stock.findById(med.medicine);
-    if (medicine) {
-      medicine.currentQty += med.quantity;
-      await medicine.save();
+  await withTransaction(async (session) => {
+    // Restore stock quantities atomically
+    for (const med of application.medicineUsed) {
+      await Stock.findByIdAndUpdate(
+        med.medicine,
+        { $inc: { currentQty: med.quantity } },
+        session ? { session } : {}
+      );
     }
-  }
 
-  // Reverse vaccination cost from animals
-  try {
+    // Reverse vaccination cost from animals
     if (application.totalCost > 0) {
       if (application.scope === 'All Animals') {
-        // Reverse cost from all active animals
-        const activeAnimals = await Animal.find({ status: 'Active' });
-        if (activeAnimals.length > 0) {
-          const costPerAnimal = application.totalCost / activeAnimals.length;
+        const count = await Animal.countDocuments({ status: 'Active' }).session(session || null);
+        if (count > 0) {
+          const perAnimal = application.totalCost / count;
           await Animal.updateMany(
             { status: 'Active' },
-            { $inc: { totalVaccinationCost: -costPerAnimal } }
+            { $inc: { totalVaccinationCost: -perAnimal } },
+            session ? { session } : {}
           );
         }
       } else if (application.scope === 'Pen' && application.pen) {
-        // Reverse cost from pen animals
-        const penAnimals = await Animal.find({ pen: application.pen, status: 'Active' });
-        if (penAnimals.length > 0) {
-          const costPerAnimal = application.totalCost / penAnimals.length;
+        const count = await Animal.countDocuments({ pen: application.pen, status: 'Active' })
+          .session(session || null);
+        if (count > 0) {
+          const perAnimal = application.totalCost / count;
           await Animal.updateMany(
             { pen: application.pen, status: 'Active' },
-            { $inc: { totalVaccinationCost: -costPerAnimal } }
+            { $inc: { totalVaccinationCost: -perAnimal } },
+            session ? { session } : {}
           );
         }
       } else if (application.scope === 'Individual Animal' && application.animal) {
-        // Reverse full cost from one animal
         await Animal.findByIdAndUpdate(
           application.animal,
-          { $inc: { totalVaccinationCost: -application.totalCost } }
+          { $inc: { totalVaccinationCost: -application.totalCost } },
+          session ? { session } : {}
         );
       }
     }
-  } catch (err) {
-    // Log error but continue with deletion
-    logger.error('Failed to reverse vaccination cost from animals:', err.message || err);
-  }
 
-  // Update vaccine recipe applied count
-  const vaccineRecipe = await VaccineRecipe.findById(application.vaccineRecipe);
-  if (vaccineRecipe && vaccineRecipe.appliedCount > 0) {
-    vaccineRecipe.appliedCount -= 1;
-    await vaccineRecipe.save();
-  }
+    // Recipe counter atomic decrement (clamped at 0)
+    await VaccineRecipe.findOneAndUpdate(
+      { _id: application.vaccineRecipe, appliedCount: { $gt: 0 } },
+      { $inc: { appliedCount: -1 } },
+      session ? { session } : {}
+    );
 
-  await VaccineApplication.findByIdAndDelete(id);
+    await VaccineApplication.findByIdAndDelete(id, session ? { session } : {});
+  });
 
   // Create audit log
   logAction({

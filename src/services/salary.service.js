@@ -1,5 +1,6 @@
 const logger = require('../utils/logger');
 const { SalaryPayment, Employee, Capital, Animal } = require('../models');
+const { withTransaction, atomic, ApiError, sampleActiveAnimal } = require('../utils');
 
 const createSalaryPayment = async (data, userId) => {
   const { employee: employeeId, month, year, paymentDate, paymentMode, advanceDeduction = 0, otherDeductions = 0, notes } = data;
@@ -40,70 +41,150 @@ const createSalaryPayment = async (data, userId) => {
     throw new Error('Net salary cannot be negative');
   }
 
-  // Create salary payment record
-  const salaryPayment = await SalaryPayment.create({
-    employee: employee._id,
-    month,
-    year,
-    basicSalary,
-    allowances,
-    grossSalary,
-    advanceDeduction: advDed,
-    otherDeductions: otherDed,
-    netSalary,
-    paymentDate: paymentDate || new Date(),
-    paymentMode: paymentMode || 'Cash',
-    notes,
-    createdBy: userId
-  });
+  // Atomic: salary record + advance deduction + capital tx + animal cost
+  // distribution all commit together. SAL1 fix.
+  const salaryPayment = await withTransaction(async (session) => {
+    const [created] = await SalaryPayment.create(
+      [{
+        employee: employee._id,
+        month,
+        year,
+        basicSalary,
+        allowances,
+        grossSalary,
+        advanceDeduction: advDed,
+        otherDeductions: otherDed,
+        netSalary,
+        paymentDate: paymentDate || new Date(),
+        paymentMode: paymentMode || 'Cash',
+        notes,
+        createdBy: userId
+      }],
+      session ? { session } : {}
+    );
 
-  // Deduct advance if any
-  if (advDed > 0) {
-    await employee.deductAdvance(advDed);
-  }
+    // Atomic advance deduction — conditional on balance ≥ deduction.
+    if (advDed > 0) {
+      await atomic.atomicDeductAdvance(employee._id, advDed, session);
+    }
 
-  // Record capital transaction as Salaries expense (negative amount)
-  try {
-    const capital = await Capital.getOrCreate(userId);
-    const description = `Salary paid to ${employee.name} for ${month}/${year}`;
-    await capital.addTransaction(-netSalary, 'Salaries', description, String(salaryPayment._id), userId);
-  } catch (err) {
-    // Do not fail the salary payment if capital logging fails; just log error
-    // eslint-disable-next-line no-console
-    logger.error('Failed to record capital transaction for salary:', err.message || err);
-  }
+    // Capital expense (atomic singleton write).
+    const capRes = await Capital.atomicAddTransaction({
+      amount: -netSalary,
+      type: 'Salaries',
+      description: `Salary paid to ${employee.name} for ${month}/${year}`,
+      reference: String(created._id),
+      createdBy: userId
+    }, session);
+    if (!capRes) {
+      throw ApiError.badRequest(
+        'Capital not initialized. Initialize capital before recording salary payments.'
+      );
+    }
 
-  // Distribute salary cost among all active animals
-  try {
-    const activeAnimalCount = await Animal.countDocuments({ status: 'Active' });
+    // Distribute salary cost across active animals.
+    const activeAnimalCount = await Animal.countDocuments({ status: 'Active' })
+      .session(session || null);
     if (activeAnimalCount > 0) {
-      // Use Math.floor for precise rounding: divide first, then round down to 2 decimals
       const costPerAnimal = Math.floor((netSalary / activeAnimalCount) * 100) / 100;
       const remainder = Math.round((netSalary - (costPerAnimal * activeAnimalCount)) * 100) / 100;
 
-      // Add costPerAnimal to all animals
       await Animal.updateMany(
         { status: 'Active' },
-        { $inc: { totalSalaryCost: costPerAnimal } }
+        { $inc: { totalSalaryCost: costPerAnimal } },
+        session ? { session } : {}
       );
 
-      // Add remainder to first animal
       if (remainder > 0) {
-        const firstAnimal = await Animal.findOne({ status: 'Active' });
-        if (firstAnimal) {
+        // X4 (Sprint 5): random active animal absorbs the paisa remainder
+        // — uniform distribution prevents bias on the oldest animal.
+        const picked = await sampleActiveAnimal({}, session);
+        if (picked) {
           await Animal.findByIdAndUpdate(
-            firstAnimal._id,
-            { $inc: { totalSalaryCost: remainder } }
+            picked._id,
+            { $inc: { totalSalaryCost: remainder } },
+            session ? { session } : {}
           );
         }
       }
     }
-  } catch (err) {
-    // eslint-disable-next-line no-console
-    logger.error('Failed to distribute salary cost to animals:', err.message || err);
-  }
+
+    return created;
+  });
 
   return salaryPayment;
+};
+
+/**
+ * Reverse a salary payment (SAL2).
+ *
+ * Use case: a salary was paid by mistake (wrong employee, wrong amount,
+ * duplicate run). Atomically:
+ *   - Refunds advance deduction back to the employee.
+ *   - Reverses the 'Salaries' capital expense (returns netSalary to available).
+ *   - Subtracts the per-animal share from active animals' totalSalaryCost.
+ *   - Deletes the SalaryPayment record.
+ *
+ * Capital reversal uses the SAME activeAnimalCount snapshot as the original
+ * payment when possible. For accuracy we use the CURRENT active count;
+ * historical accuracy is acceptable for a corrective operation.
+ */
+const reverseSalaryPayment = async (id, userId) => {
+  const payment = await SalaryPayment.findById(id);
+  if (!payment) {
+    throw new Error('Salary payment not found');
+  }
+
+  await withTransaction(async (session) => {
+    // Refund advance deduction (if any).
+    if (payment.advanceDeduction > 0) {
+      await atomic.atomicAddAdvance(payment.employee, payment.advanceDeduction, session);
+    }
+
+    // Reverse capital expense: post a 'Salary Reversal' line that returns
+    // netSalary to available cash. Salaries weren't in the investmentTypes
+    // list, so reverseTransaction adjusts availableAmount only.
+    await Capital.atomicReverseTransaction({
+      amount: -payment.netSalary, // original signed amount
+      type: 'Salaries',
+      reversalType: 'Salary Reversal',
+      description: `Salary reversal for ${payment.month}/${payment.year} (payment ${payment._id})`,
+      reference: String(payment._id),
+      createdBy: userId
+    }, session);
+
+    // Reverse per-animal salary cost distribution.
+    const activeAnimalCount = await Animal.countDocuments({ status: 'Active' })
+      .session(session || null);
+    if (activeAnimalCount > 0 && payment.netSalary > 0) {
+      const costPerAnimal = Math.floor((payment.netSalary / activeAnimalCount) * 100) / 100;
+      const remainder = Math.round(
+        (payment.netSalary - (costPerAnimal * activeAnimalCount)) * 100
+      ) / 100;
+
+      await Animal.updateMany(
+        { status: 'Active' },
+        { $inc: { totalSalaryCost: -costPerAnimal } },
+        session ? { session } : {}
+      );
+
+      if (remainder > 0) {
+        // X4 (Sprint 5): random active animal — symmetric with create path.
+        const picked = await sampleActiveAnimal({}, session);
+        if (picked) {
+          await Animal.findByIdAndUpdate(
+            picked._id,
+            { $inc: { totalSalaryCost: -remainder } },
+            session ? { session } : {}
+          );
+        }
+      }
+    }
+
+    await SalaryPayment.findByIdAndDelete(id, session ? { session } : {});
+  });
+
+  return payment;
 };
 
 const getSalaryPayments = async (query) => {
@@ -145,6 +226,7 @@ const getSalaryPayments = async (query) => {
 
 module.exports = {
   createSalaryPayment,
+  reverseSalaryPayment,
   getSalaryPayments
 };
 

@@ -1,6 +1,15 @@
-const { Employee, User } = require('../models');
+const { Employee, User, Capital } = require('../models');
 const logger = require('../utils/logger');
-const { ApiError, getPaginationOptions, getSortOptions, getPaginationMeta } = require('../utils');
+const {
+  ApiError,
+  getPaginationOptions,
+  getSortOptions,
+  getPaginationMeta,
+  logAction,
+  diffFields,
+  withTransaction
+} = require('../utils');
+const { EMPLOYEE_SEPARATED_STATUSES } = require('../constants');
 const userService = require('./user.service');
 
 /**
@@ -108,7 +117,10 @@ const create = async (employeeData, userId) => {
 /**
  * Update employee
  */
-const update = async (id, updateData) => {
+const update = async (id, updateData, userId) => {
+  const beforeDoc = await Employee.findById(id).lean();
+  if (!beforeDoc) throw ApiError.notFound('Employee not found');
+
   // Check for duplicate CNIC if being changed
   if (updateData.cnic) {
     const existingCnic = await Employee.findOne({
@@ -129,6 +141,20 @@ const update = async (id, updateData) => {
   if (!employee) {
     throw ApiError.notFound('Employee not found');
   }
+
+  // AL3: structured before/after diff over only the supplied fields.
+  const diff = diffFields(beforeDoc, employee.toObject(), Object.keys(updateData));
+  logAction({
+    userId,
+    action: 'Employee Updated',
+    entityType: 'Employee',
+    entityId: employee._id,
+    metadata: {
+      name: employee.name,
+      department: employee.department,
+      diff
+    }
+  });
 
   return employee;
 };
@@ -193,6 +219,147 @@ const getSummary = async () => {
 };
 
 /**
+ * Separate an employee (resign / terminate / retire / mark inactive).
+ *
+ * Atomic flow:
+ *   - Validate employee is currently Active.
+ *   - Set status to the target (Resigned | Terminated | Retired | Inactive),
+ *     stamp dateOfLeaving and leavingReason.
+ *   - If `writeOffAdvance` is true AND the employee has an outstanding
+ *     advanceBalance, zero the balance and post the amount as a capital loss
+ *     (uncollectible advance). Captures real-world reality where a leaving
+ *     employee may not return the advance.
+ *   - Deactivate the linked User account, if any, so they can no longer log in.
+ *
+ * @param {string} id Employee id
+ * @param {object} data { status, dateOfLeaving?, leavingReason?, writeOffAdvance? }
+ * @param {string} userId Acting admin's id (for audit + capital ledger)
+ */
+const separateEmployee = async (id, data, userId) => {
+  const employee = await Employee.findById(id);
+  if (!employee) throw ApiError.notFound('Employee not found');
+
+  if (employee.status !== 'Active') {
+    throw ApiError.badRequest(
+      `Employee is already separated (status: ${employee.status}). Reactivate first if needed.`
+    );
+  }
+
+  const status = data.status;
+  if (!EMPLOYEE_SEPARATED_STATUSES.includes(status)) {
+    throw ApiError.badRequest(
+      `Invalid separation status. Use one of: ${EMPLOYEE_SEPARATED_STATUSES.join(', ')}`
+    );
+  }
+
+  const dateOfLeaving = data.dateOfLeaving ? new Date(data.dateOfLeaving) : new Date();
+  const leavingReason = (data.leavingReason || '').trim();
+  const shouldWriteOffAdvance = Boolean(data.writeOffAdvance);
+  const outstandingAdvance = Number(employee.advanceBalance) || 0;
+
+  await withTransaction(async (session) => {
+    const sessOpt = session ? { session } : {};
+
+    // Status transition: only flip if still Active. Conditional findOneAndUpdate
+    // prevents two concurrent separation requests from both succeeding.
+    const updateSet = {
+      status,
+      dateOfLeaving,
+      leavingReason
+    };
+    if (shouldWriteOffAdvance && outstandingAdvance > 0) {
+      updateSet.advanceBalance = 0;
+    }
+    const updated = await Employee.findOneAndUpdate(
+      { _id: id, status: 'Active' },
+      { $set: updateSet },
+      { new: true, ...sessOpt }
+    );
+    if (!updated) {
+      throw ApiError.badRequest('Employee status changed concurrently; aborting.');
+    }
+
+    // Write off the advance as a capital loss when requested.
+    if (shouldWriteOffAdvance && outstandingAdvance > 0) {
+      await Capital.atomicAddLoss({
+        amount: outstandingAdvance,
+        type: 'Other Expense',
+        description: `Advance written off — ${updated.name} (${status})`,
+        reference: String(updated._id),
+        createdBy: userId
+      }, session);
+    }
+
+    // Deactivate the linked User account if any — leaving employees should
+    // not retain login access. User can be reactivated separately if needed.
+    const linkedUser = await User.findOne({ employee: id }).session(session || null);
+    if (linkedUser && linkedUser.isActive) {
+      linkedUser.isActive = false;
+      await linkedUser.save(sessOpt);
+    }
+  });
+
+  // Refetch to return the latest doc with all side effects applied.
+  const fresh = await Employee.findById(id);
+
+  logAction({
+    userId,
+    action: 'Employee Separated',
+    entityType: 'Employee',
+    entityId: fresh._id,
+    metadata: {
+      name: fresh.name,
+      previousStatus: 'Active',
+      newStatus: status,
+      dateOfLeaving,
+      leavingReason: leavingReason || null,
+      advanceWrittenOff: shouldWriteOffAdvance ? outstandingAdvance : 0,
+      outstandingAdvanceAtSeparation: outstandingAdvance
+    }
+  });
+
+  return fresh;
+};
+
+/**
+ * Reactivate a previously-separated employee.
+ * Clears dateOfLeaving and leavingReason, sets status back to Active.
+ */
+const reactivateEmployee = async (id, userId) => {
+  const employee = await Employee.findById(id);
+  if (!employee) throw ApiError.notFound('Employee not found');
+
+  if (employee.status === 'Active') {
+    throw ApiError.badRequest('Employee is already Active');
+  }
+
+  const updated = await Employee.findOneAndUpdate(
+    { _id: id, status: { $ne: 'Active' } },
+    {
+      $set: { status: 'Active' },
+      $unset: { dateOfLeaving: 1, leavingReason: 1 }
+    },
+    { new: true }
+  );
+  if (!updated) {
+    throw ApiError.badRequest('Employee status changed concurrently; aborting.');
+  }
+
+  logAction({
+    userId,
+    action: 'Employee Reactivated',
+    entityType: 'Employee',
+    entityId: updated._id,
+    metadata: {
+      name: updated.name,
+      previousStatus: employee.status
+    }
+  });
+
+  return updated;
+};
+
+/**
  * Reset login password for an employee (Admin-only)
  */
 const resetEmployeePassword = async (employeeId, newPassword) => {
@@ -221,5 +388,7 @@ module.exports = {
   remove,
   getWithOutstandingAdvances,
   getSummary,
-  resetEmployeePassword
+  resetEmployeePassword,
+  separateEmployee,
+  reactivateEmployee
 };

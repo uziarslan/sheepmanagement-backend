@@ -125,7 +125,10 @@ const uploadInvoice = asyncHandler(async (req, res) => {
   const dataUri = `data:${req.file.mimetype};base64,${base64}`;
 
   const uploadResult = await cloudinary.uploader.upload(dataUri, {
-    folder: 'sheep-management/invoices',
+    // M4 (Sprint 4): folder is namespaced per deployment via env.
+    // Set FARM_KEY (or CLOUDINARY_INVOICE_FOLDER for full control) so two
+    // farm deployments sharing a Cloudinary account don't co-mingle invoices.
+    folder: env.cloudinary.invoiceFolder,
     resource_type: 'auto'
   }).catch((error) => {
     throw ApiError.badRequest(`Upload failed: ${error.message}`);
