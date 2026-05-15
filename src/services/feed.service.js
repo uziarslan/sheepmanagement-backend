@@ -51,16 +51,20 @@ const getRecipeById = async (id) => {
     throw ApiError.notFound('Recipe not found');
   }
 
-  // Get pen animal count for cost per animal calculation
-  const animalCount = await Animal.countDocuments({ 
-    pen: recipe.pen._id, 
-    status: 'Active' 
+  // Recipe quantities/cost are PER ANIMAL (semantic change). costPerAnimal is
+  // therefore just totalCost. totalCostForPen scales by the current head count
+  // in the recipe's default pen, but the real spend is settled at apply-time
+  // based on the pens actually targeted.
+  const animalCount = await Animal.countDocuments({
+    pen: recipe.pen._id,
+    status: 'Active'
   });
 
   return {
     ...recipe.toObject(),
     animalCount,
-    costPerAnimal: animalCount > 0 ? recipe.totalCost / animalCount : 0
+    costPerAnimal: recipe.totalCost || 0,
+    totalCostForPen: (recipe.totalCost || 0) * animalCount
   };
 };
 
@@ -71,7 +75,9 @@ const createRecipe = async (data, userId) => {
 
   data.penName = pen.name;
 
-  // Calculate totals
+  // Recipe ingredients are stored PER ANIMAL. totalQuantity / totalCost on the
+  // recipe document represent the per-animal totals. The apply flow multiplies
+  // by active animal count at apply-time.
   let totalQuantity = 0;
   let totalCost = 0;
 
@@ -238,37 +244,83 @@ const getApplications = async (query) => {
   };
 };
 
+/**
+ * Apply a recipe to one or more pens.
+ *
+ * Semantics (changed): the recipe stores quantities and cost PER ANIMAL.
+ * Apply-time math:
+ *   - For each ingredient: deduct `ingredient.quantity × totalAnimalCount`
+ *     from FIFO stock across all selected pens.
+ *   - costPerAnimal = recipe.totalCost (settled against actual FIFO spend).
+ *   - For each pen, the recorded application has:
+ *       animalCount      = active animals in that pen
+ *       totalCost        = costPerAnimal × animalCount
+ *       ingredients[*].quantity = recipe.ing.quantity × animalCount
+ *
+ * Accepts:
+ *   - { pen: <id>, ... }       → single-pen apply (back-compat)
+ *   - { pens: [<id>, ...] }    → multi-pen apply (new)
+ *
+ * Returns:
+ *   - single-pen mode  → the created FeedApplication (back-compat shape)
+ *   - multi-pen mode   → { applications: [...], totalCost, totalAnimalCount }
+ */
 const applyRecipe = async (data, userId) => {
   // Validate recipe
   const recipe = await FeedRecipe.findById(data.recipe);
   if (!recipe) throw ApiError.notFound('Recipe not found');
 
-  // Validate pen
-  const pen = await Pen.findById(data.pen);
-  if (!pen) throw ApiError.notFound('Pen not found');
+  // Normalize pen → pens[]. Track whether the caller used single-pen mode so
+  // we can return the legacy single-application shape unchanged.
+  const singlePenMode = !Array.isArray(data.pens);
+  const penIds = singlePenMode
+    ? [data.pen]
+    : data.pens;
 
-  // Get animal count in pen (snapshot). Cost-per-animal is computed AFTER
-  // FIFO settles the actual spend, since batch rates may vary.
-  const animalCount = await Animal.countDocuments({
-    pen: data.pen,
-    status: 'Active'
-  });
+  if (!penIds || penIds.length === 0) {
+    throw ApiError.badRequest('At least one pen is required');
+  }
 
-  const application = await withTransaction(async (session) => {
-    // ── FIFO stock validation & deduction (price-tolerant) ────────────────
-    // Sprint 3 (F4/S6): FIFO no longer filters by openingRatePerUnit. A stock
-    // price edit after recipe creation used to break apply-recipe. Now we
-    // match by productName + category, sort by purchaseDate, and compute
-    // actual cost from each batch's own rate. The application's totalCost
-    // reflects ACTUAL spend, which may differ from recipe.totalCost.
-    //
-    // Each batch may be drained with an atomic conditional decrement so two
-    // parallel callers can't both drive a balance negative.
+  // De-dupe pen IDs (a UI bug shouldn't get the same pen charged twice).
+  const uniquePenIds = [...new Set(penIds.map(String))];
+
+  // Load all pens up-front so a bad ID errors out before stock is touched.
+  const pens = await Pen.find({ _id: { $in: uniquePenIds } });
+  if (pens.length !== uniquePenIds.length) {
+    throw ApiError.notFound('One or more pens not found');
+  }
+  const pensById = Object.fromEntries(pens.map(p => [String(p._id), p]));
+
+  // Snapshot active animal counts per pen.
+  const penAnimalCounts = {};
+  let totalAnimalCount = 0;
+  for (const id of uniquePenIds) {
+    const count = await Animal.countDocuments({ pen: id, status: 'Active' });
+    penAnimalCounts[id] = count;
+    totalAnimalCount += count;
+  }
+
+  if (totalAnimalCount === 0) {
+    throw ApiError.badRequest(
+      'No active animals in the selected pen(s); nothing to apply against.'
+    );
+  }
+
+  const result = await withTransaction(async (session) => {
+    // ── FIFO stock deduction for the COMBINED quantity ────────────────────
+    // For each ingredient, we need `ing.quantity × totalAnimalCount` deducted
+    // (the recipe is per-animal). FIFO sweeps batches by purchase date and
+    // computes a weighted-average actual rate. The per-animal cost is then
+    // settled against the actual spend, so a stock-price edit between recipe
+    // creation and apply time is handled correctly (Sprint 3 F4/S6).
     const ingredientCostBreakdown = [];
     let actualTotalCost = 0;
 
     for (const ing of recipe.ingredients) {
       const ingName = ing.name;
+      const totalQtyNeeded = (Number(ing.quantity) || 0) * totalAnimalCount;
+      if (totalQtyNeeded <= 0) continue;
+
       const refStock = await Stock.findById(ing.stock).session(session || null);
       if (!refStock) {
         throw ApiError.notFound(`Stock item "${ingName}" not found`);
@@ -282,15 +334,16 @@ const applyRecipe = async (data, userId) => {
         .session(session || null);
 
       const totalAvailable = matchingStocks.reduce((s, st) => s + (st.currentQty || 0), 0);
-      if (totalAvailable < ing.quantity) {
+      if (totalAvailable < totalQtyNeeded) {
         throw ApiError.badRequest(
-          `Insufficient stock for ${ingName}. Total available: ${totalAvailable} ${ing.unit}, needed: ${ing.quantity}`
+          `Insufficient stock for ${ingName}. Total available: ${totalAvailable} ${ing.unit}, ` +
+          `needed: ${totalQtyNeeded} ${ing.unit} (${ing.quantity} × ${totalAnimalCount} animal${totalAnimalCount > 1 ? 's' : ''})`
         );
       }
 
-      let remaining = ing.quantity;
+      let remaining = totalQtyNeeded;
       let ingActualCost = 0;
-      const batchTrail = []; // { stockId, qty, rate, cost }
+      const batchTrail = [];
 
       for (const st of matchingStocks) {
         if (remaining <= 0) break;
@@ -322,7 +375,7 @@ const applyRecipe = async (data, userId) => {
 
       if (remaining > 0) {
         throw ApiError.badRequest(
-          `Could not fully deduct ${ing.quantity} ${ing.unit} of ${ingName} (concurrent contention).`
+          `Could not fully deduct ${totalQtyNeeded} ${ing.unit} of ${ingName} (concurrent contention).`
         );
       }
 
@@ -331,99 +384,143 @@ const applyRecipe = async (data, userId) => {
         stock: ing.stock,
         name: ing.name,
         unit: ing.unit,
-        quantity: ing.quantity,
-        // For backward compat: rate is the weighted-average actual rate.
-        rate: ing.quantity > 0 ? ingActualCost / ing.quantity : (ing.ratePerUnit || 0),
-        total: ingActualCost,
+        perAnimalQuantity: Number(ing.quantity) || 0,
+        totalQuantity: totalQtyNeeded,
+        // Weighted-average actual rate paid across the FIFO batches.
+        rate: totalQtyNeeded > 0 ? ingActualCost / totalQtyNeeded : (ing.ratePerUnit || 0),
+        totalCost: ingActualCost,
         batches: batchTrail
       });
     }
 
-    // Recompute cost-per-animal off the ACTUAL spend (not the recipe snapshot).
-    const actualCostPerAnimal = animalCount > 0
-      ? Math.floor(actualTotalCost * 100 / animalCount) / 100
+    // Per-animal cost from ACTUAL spend (consistent across all pens applied
+    // to in this call — they share the same FIFO settle).
+    const actualCostPerAnimal = totalAnimalCount > 0
+      ? Math.floor(actualTotalCost * 100 / totalAnimalCount) / 100
       : 0;
-    const actualRemainder = animalCount > 0
-      ? Math.round((actualTotalCost - (actualCostPerAnimal * animalCount)) * 100) / 100
+    const actualRemainder = totalAnimalCount > 0
+      ? Math.round((actualTotalCost - (actualCostPerAnimal * totalAnimalCount)) * 100) / 100
       : 0;
 
-    // Create application
-    const applicationData = {
-      recipe: recipe._id,
-      recipeName: recipe.name,
-      pen: pen._id,
-      penName: pen.name,
-      date: data.date || new Date(),
-      animalCount,
-      ingredients: ingredientCostBreakdown.map(b => ({
-        stock: b.stock,
-        name: b.name,
-        unit: b.unit,
-        quantity: b.quantity,
-        rate: b.rate,
-        total: b.total
-      })),
-      totalCost: actualTotalCost,
-      costPerAnimal: actualCostPerAnimal,
-      notes: data.notes,
-      appliedBy: userId,
-      createdBy: userId
-    };
+    // ── Create one FeedApplication per pen ────────────────────────────────
+    const createdApplications = [];
+    for (const penId of uniquePenIds) {
+      const pen = pensById[penId];
+      const count = penAnimalCounts[penId];
+      if (count === 0) continue; // skip empty pens, nothing to apply against
 
-    const [created] = await FeedApplication.create(
-      [applicationData],
-      session ? { session } : {}
-    );
+      const penIngredients = ingredientCostBreakdown.map(b => {
+        const penQty = b.perAnimalQuantity * count;
+        return {
+          stock: b.stock,
+          name: b.name,
+          unit: b.unit,
+          quantity: penQty,
+          rate: b.rate,
+          total: penQty * b.rate
+        };
+      });
 
-    // Recipe counter (moved out of pre-save hook so it shares the session).
+      const penTotalCost = Math.round(actualCostPerAnimal * count * 100) / 100;
+
+      const [created] = await FeedApplication.create(
+        [{
+          recipe: recipe._id,
+          recipeName: recipe.name,
+          pen: pen._id,
+          penName: pen.name,
+          date: data.date || new Date(),
+          animalCount: count,
+          ingredients: penIngredients,
+          totalCost: penTotalCost,
+          costPerAnimal: actualCostPerAnimal,
+          notes: data.notes,
+          appliedBy: userId,
+          createdBy: userId
+        }],
+        session ? { session } : {}
+      );
+
+      // Bump every active animal in this pen by costPerAnimal.
+      if (actualCostPerAnimal > 0) {
+        await Animal.updateMany(
+          { pen: pen._id, status: 'Active' },
+          { $inc: { totalFeedCost: actualCostPerAnimal } },
+          session ? { session } : {}
+        );
+      }
+
+      createdApplications.push(created);
+    }
+
+    // Drop the paisa remainder on a random active animal across all selected
+    // pens. Same reasoning as the single-pen path — avoids bias drift.
+    if (actualRemainder > 0) {
+      const picked = await sampleActiveAnimal(
+        { pen: { $in: uniquePenIds } },
+        session
+      );
+      if (picked) {
+        await Animal.findByIdAndUpdate(
+          picked._id,
+          { $inc: { totalFeedCost: actualRemainder } },
+          session ? { session } : {}
+        );
+      }
+    }
+
+    // Recipe counter ticks once per apply-action, regardless of pen count.
     await FeedRecipe.findByIdAndUpdate(
       recipe._id,
       { $inc: { appliedCount: 1 }, $set: { lastAppliedDate: new Date() } },
       session ? { session } : {}
     );
 
-    // Distribute cost across active animals in pen using ACTUAL spend.
-    if (animalCount > 0 && actualCostPerAnimal > 0) {
-      await Animal.updateMany(
-        { pen: pen._id, status: 'Active' },
-        { $inc: { totalFeedCost: actualCostPerAnimal } },
-        session ? { session } : {}
-      );
-      if (actualRemainder > 0) {
-        // X4 (Sprint 5): pick a RANDOM active animal in the pen for the
-        // remainder paisa rather than always the oldest — eliminates
-        // first-animal cost-bias drift over many applications.
-        const picked = await sampleActiveAnimal({ pen: pen._id }, session);
-        if (picked) {
-          await Animal.findByIdAndUpdate(
-            picked._id,
-            { $inc: { totalFeedCost: actualRemainder } },
-            session ? { session } : {}
-          );
-        }
-      }
-    }
-
-    return created;
+    return {
+      applications: createdApplications,
+      actualTotalCost,
+      actualCostPerAnimal
+    };
   });
 
   logAction({
     userId,
     action: 'Feed Recipe Applied',
     entityType: 'FeedApplication',
-    entityId: application._id,
+    entityId: result.applications[0]?._id,
     metadata: {
       recipeName: recipe.name,
-      penName: pen.name,
-      animalCount,
-      ingredientCount: recipe.ingredients.length,
-      recipeEstimatedCost: recipe.totalCost,
-      actualTotalCost: application.totalCost,
-      costPerAnimal: application.costPerAnimal
+      penCount: result.applications.length,
+      penNames: result.applications.map(a => a.penName),
+      totalAnimalCount,
+      recipeEstimatedCostPerAnimal: recipe.totalCost,
+      actualCostPerAnimal: result.actualCostPerAnimal,
+      actualTotalCost: result.actualTotalCost
     }
   });
 
-  return application.populate(['recipe', 'pen', 'appliedBy']);
+  // Back-compat: single-pen callers get back a single populated application.
+  if (singlePenMode) {
+    const app = result.applications[0];
+    if (!app) {
+      // No app was created (e.g. the only pen had 0 animals — caught above,
+      // but defensive). Surface as a bad request so the client sees a real
+      // error rather than a null body.
+      throw ApiError.badRequest('No application created');
+    }
+    return app.populate(['recipe', 'pen', 'appliedBy']);
+  }
+
+  // Multi-pen callers get the full result, with each application populated.
+  const populated = await Promise.all(
+    result.applications.map(a => a.populate(['recipe', 'pen', 'appliedBy']))
+  );
+  return {
+    applications: populated,
+    totalCost: result.actualTotalCost,
+    totalAnimalCount,
+    costPerAnimal: result.actualCostPerAnimal
+  };
 };
 
 /**
@@ -435,7 +532,7 @@ const applyRecipe = async (data, userId) => {
  * @returns {{ succeeded: object[], failed: { date: string, error: string }[] }}
  */
 const applyRecipeRange = async (data, userId) => {
-  const { recipe, pen, dateStart, dateEnd, notes } = data;
+  const { recipe, pen, pens, dateStart, dateEnd, notes } = data;
 
   // Build the list of ISO date strings in the range (inclusive, max 90)
   const start = new Date(dateStart);
@@ -449,9 +546,18 @@ const applyRecipeRange = async (data, userId) => {
   const succeeded = [];
   const failed    = [];
 
+  // Pass either pen (single) or pens[] (multi) through to applyRecipe so the
+  // range form supports the same multi-pen mode as the one-shot endpoint.
+  const penPayload = Array.isArray(pens) && pens.length > 0
+    ? { pens }
+    : { pen };
+
   for (const date of dates) {
     try {
-      const application = await applyRecipe({ recipe, pen, date, notes }, userId);
+      const application = await applyRecipe(
+        { recipe, ...penPayload, date, notes },
+        userId
+      );
       succeeded.push(application);
     } catch (err) {
       failed.push({ date, error: err.message || 'Unknown error' });

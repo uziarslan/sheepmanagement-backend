@@ -51,6 +51,7 @@ router.post(
   '/applications/range',
   authorize('Admin', 'Manager', 'Employee'),
   idempotency,
+  validate(feedValidation.applyRecipeRange),
   feedController.applyRecipeRange
 );
 
