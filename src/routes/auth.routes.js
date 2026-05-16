@@ -27,30 +27,23 @@ router.post(
   authController.refreshToken
 );
 
-// Password reset routes (future implementation)
-router.post(
-  '/forgot-password',
-  authLimiter,
-  // TODO: Implement forgot password - send reset email
-  (req, res) => {
-    res.status(501).json({
-      success: false,
-      message: 'Password reset feature coming soon'
-    });
-  }
-);
+// Password reset is intentionally NOT a public flow on this deployment.
+// Users must request a reset from an Admin, who uses:
+//   PATCH /api/users/:id/password
+//   PATCH /api/employees/:id/reset-password
+// AU5 (Sprint 4): replaced the 501 stubs with explicit 410 Gone messages so
+// clients stop hitting these endpoints and probing the password-reset surface.
+const goneHandler = (req, res) => {
+  res.status(410).json({
+    success: false,
+    message:
+      'This endpoint is not available. Ask an administrator to reset your ' +
+      'password via the admin reset flow (PATCH /api/users/:id/password).'
+  });
+};
 
-router.post(
-  '/reset-password',
-  authLimiter,
-  // TODO: Implement reset password - validate token and update password
-  (req, res) => {
-    res.status(501).json({
-      success: false,
-      message: 'Password reset feature coming soon'
-    });
-  }
-);
+router.post('/forgot-password', authLimiter, goneHandler);
+router.post('/reset-password', authLimiter, goneHandler);
 
 // Protected routes
 router.use(authenticate); // All routes below require authentication

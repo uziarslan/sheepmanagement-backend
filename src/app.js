@@ -4,6 +4,7 @@ const helmet = require('helmet');
 const morgan = require('morgan');
 const { env } = require('./config');
 const { logger } = require('./utils');
+const { requestContextMiddleware } = require('./utils/requestContext');
 const {
   errorConverter,
   errorHandler,
@@ -47,6 +48,11 @@ if (env.isDevelopment) {
 // Body parsing middleware
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+// AL2 (Sprint 4): per-request async-context stash. Lets deep service-layer
+// `logAction` calls auto-pick up the current request for IP/userAgent
+// without threading `req` through every signature.
+app.use(requestContextMiddleware);
 
 // Rate limiting (apply to all API routes in all environments)
 app.use('/api', apiLimiter);

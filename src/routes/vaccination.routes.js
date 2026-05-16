@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { vaccinationController } = require('../controllers');
-const { authenticate, authorize, validate } = require('../middleware');
+const { authenticate, authorize, validate, idempotency } = require('../middleware');
 const { vaccinationValidation } = require('../validations');
 
 // All routes require authentication
@@ -49,6 +49,7 @@ router.get(
 router.post(
   '/applications',
   authorize('Admin', 'Manager'),
+  idempotency,
   validate(vaccinationValidation.applyVaccine),
   vaccinationController.applyVaccine
 );

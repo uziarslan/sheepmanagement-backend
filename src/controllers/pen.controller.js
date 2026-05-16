@@ -43,8 +43,8 @@ const create = asyncHandler(async (req, res) => {
  * PUT /api/pens/:id
  */
 const update = asyncHandler(async (req, res) => {
-  const pen = await penService.update(req.params.id, req.body);
-  
+  const pen = await penService.update(req.params.id, req.body, req.user.id);
+
   res.status(HTTP_STATUS.OK).json(
     successResponse(pen, 'Pen updated successfully')
   );
@@ -55,8 +55,8 @@ const update = asyncHandler(async (req, res) => {
  * DELETE /api/pens/:id
  */
 const remove = asyncHandler(async (req, res) => {
-  await penService.remove(req.params.id);
-  
+  await penService.remove(req.params.id, req.user.id);
+
   res.status(HTTP_STATUS.OK).json(
     successResponse(null, 'Pen deleted successfully')
   );

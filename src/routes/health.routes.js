@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { healthController } = require('../controllers');
-const { authenticate, authorize, validate } = require('../middleware');
+const { authenticate, authorize, validate, idempotency } = require('../middleware');
 const { healthValidation } = require('../validations');
 
 // All routes require authentication
@@ -56,6 +56,7 @@ router.get(
 router.post(
   '/treatments',
   authorize('Admin', 'Manager', 'Employee'),
+  idempotency,
   validate(healthValidation.createTreatment),
   healthController.createTreatment
 );
@@ -83,6 +84,7 @@ router.get(
 router.post(
   '/dewormings',
   authorize('Admin', 'Manager', 'Employee'),
+  idempotency,
   validate(healthValidation.createDeworming),
   healthController.createDeworming
 );

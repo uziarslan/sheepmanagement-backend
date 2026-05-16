@@ -70,43 +70,10 @@ feedApplicationSchema.index({ recipe: 1 });
 feedApplicationSchema.index({ pen: 1 });
 feedApplicationSchema.index({ date: -1 });
 
-// Pre-save middleware to deduct stock and update recipe
-feedApplicationSchema.pre('save', async function (next) {
-  if (this.isNew) {
-    const FeedRecipe = mongoose.model('FeedRecipe');
-    const Animal = mongoose.model('Animal');
-    
-    // Update recipe applied count
-    if (this.recipe) {
-      const recipe = await FeedRecipe.findById(this.recipe);
-      if (recipe) {
-        await recipe.incrementAppliedCount();
-      }
-    }
-    
-    // Distribute cost to animals in pen with proper rounding
-    if (this.pen && this.animalCount > 0) {
-      const costPerAnimal = Math.floor((this.totalCost / this.animalCount) * 100) / 100;
-      const remainder = Math.round((this.totalCost - (costPerAnimal * this.animalCount)) * 100) / 100;
-
-      await Animal.updateMany(
-        { pen: this.pen, status: 'Active' },
-        { $inc: { totalFeedCost: costPerAnimal } }
-      );
-
-      // Add remainder to first animal
-      if (remainder > 0) {
-        const firstAnimal = await Animal.findOne({ pen: this.pen, status: 'Active' });
-        if (firstAnimal) {
-          await Animal.findByIdAndUpdate(firstAnimal._id, {
-            $inc: { totalFeedCost: remainder }
-          });
-        }
-      }
-    }
-  }
-  next();
-});
+// NOTE: Side effects (recipe counter increment, animal cost distribution) were
+// previously done in a pre-save hook. They've been moved to feed.service.js so
+// they can share the session of the surrounding transaction (Sprint 2).
+// Do NOT re-add side effects here without threading session through.
 
 // Static method to get applications by date range
 feedApplicationSchema.statics.getByDateRange = async function (startDate, endDate) {

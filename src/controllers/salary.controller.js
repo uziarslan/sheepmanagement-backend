@@ -44,8 +44,35 @@ const createSalaryPayment = asyncHandler(async (req, res) => {
   );
 });
 
+/**
+ * Reverse a salary payment (Admin only).
+ * DELETE /api/salaries/:id
+ */
+const reverseSalaryPayment = asyncHandler(async (req, res) => {
+  const payment = await salaryService.reverseSalaryPayment(req.params.id, req.user.id);
+
+  logAction({
+    req,
+    action: 'REVERSE_SALARY_PAYMENT',
+    entityType: 'SalaryPayment',
+    entityId: payment._id,
+    metadata: {
+      employee: payment.employee,
+      month: payment.month,
+      year: payment.year,
+      netSalary: payment.netSalary,
+      advanceDeduction: payment.advanceDeduction
+    }
+  });
+
+  res.status(HTTP_STATUS.OK).json(
+    successResponse(payment, 'Salary payment reversed; capital, advance, and animal costs restored')
+  );
+});
+
 module.exports = {
   getSalaryPayments,
-  createSalaryPayment
+  createSalaryPayment,
+  reverseSalaryPayment
 };
 
