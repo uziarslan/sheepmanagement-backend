@@ -21,6 +21,7 @@ const VaccineApplication = require('./vaccineApplication.model');
 const Capital = require('./capital.model');
 const Liability = require('./liability.model');
 const AuditLog = require('./auditLog.model');
+const IdempotencyKey = require('./idempotencyKey.model');
 
 module.exports = {
   User,
@@ -45,5 +46,6 @@ module.exports = {
   VaccineApplication,
   Capital,
   Liability,
-  AuditLog
+  AuditLog,
+  IdempotencyKey
 };

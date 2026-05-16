@@ -1,10 +1,11 @@
 const Joi = require('joi');
+const { STRONG_PASSWORD } = require('./password');
 
 const register = {
   body: Joi.object().keys({
     name: Joi.string().required().min(2).max(100).trim(),
     email: Joi.string().required().email().lowercase().trim(),
-    password: Joi.string().required().min(6).max(128),
+    password: STRONG_PASSWORD.required(),
     confirmPassword: Joi.string().required().valid(Joi.ref('password'))
       .messages({ 'any.only': 'Passwords do not match' }),
     farmName: Joi.string().max(200).trim(),
@@ -28,7 +29,9 @@ const refreshToken = {
 const changePassword = {
   body: Joi.object().keys({
     currentPassword: Joi.string().required(),
-    newPassword: Joi.string().required().min(6).max(128),
+    newPassword: STRONG_PASSWORD.required()
+      .invalid(Joi.ref('currentPassword'))
+      .messages({ 'any.invalid': 'New password must differ from current password' }),
     confirmPassword: Joi.string().required().valid(Joi.ref('newPassword'))
       .messages({ 'any.only': 'Passwords do not match' })
   })

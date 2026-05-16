@@ -57,17 +57,9 @@ const create = asyncHandler(async (req, res) => {
  * PUT /api/employees/:id
  */
 const update = asyncHandler(async (req, res) => {
-  const employee = await employeeService.update(req.params.id, req.body);
-
-  logAction({
-    req,
-    action: 'UPDATE_EMPLOYEE',
-    entityType: 'Employee',
-    entityId: employee.id,
-    metadata: {
-      updates: req.body
-    }
-  });
+  // Pass userId so the service-side audit entry has a structured diff
+  // attributed to the right user (Sprint 5 — AL3).
+  const employee = await employeeService.update(req.params.id, req.body, req.user.id);
 
   res.status(HTTP_STATUS.OK).json(
     successResponse(employee, 'Employee updated successfully')
@@ -90,6 +82,37 @@ const remove = asyncHandler(async (req, res) => {
 
   res.status(HTTP_STATUS.OK).json(
     successResponse(null, 'Employee deleted successfully')
+  );
+});
+
+/**
+ * Separate an employee — resign / terminate / retire / mark inactive.
+ * PATCH /api/employees/:id/separate
+ */
+const separate = asyncHandler(async (req, res) => {
+  const employee = await employeeService.separateEmployee(
+    req.params.id,
+    req.body,
+    req.user.id
+  );
+
+  res.status(HTTP_STATUS.OK).json(
+    successResponse(employee, `Employee marked as ${employee.status}`)
+  );
+});
+
+/**
+ * Reactivate a separated employee.
+ * PATCH /api/employees/:id/reactivate
+ */
+const reactivate = asyncHandler(async (req, res) => {
+  const employee = await employeeService.reactivateEmployee(
+    req.params.id,
+    req.user.id
+  );
+
+  res.status(HTTP_STATUS.OK).json(
+    successResponse(employee, 'Employee reactivated successfully')
   );
 });
 
@@ -145,5 +168,7 @@ module.exports = {
   remove,
   getWithAdvances,
   getSummary,
-  resetPassword
+  resetPassword,
+  separate,
+  reactivate
 };

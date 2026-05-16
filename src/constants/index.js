@@ -97,7 +97,11 @@ const BANKS = [
   'Faysal Bank'
 ];
 
-const EMPLOYEE_STATUSES = ['Active', 'Inactive', 'Terminated'];
+const EMPLOYEE_STATUSES = ['Active', 'Inactive', 'Resigned', 'Terminated', 'Retired'];
+
+// Subset that represents "no longer employed". Used by the separation flow
+// and to gate operations like creating new salary payments / advances.
+const EMPLOYEE_SEPARATED_STATUSES = ['Inactive', 'Resigned', 'Terminated', 'Retired'];
 
 // Advance constants
 const ADVANCE_TYPES = ['Given', 'Returned'];
@@ -190,10 +194,15 @@ const CAPITAL_TRANSACTION_TYPES = [
   'Investment Withdrawal',
   'Animal Purchase',
   'Animal Sale',
+  'Animal Sale Reversal',
   'Animal Death',
+  'Animal Death Reversal',
+  'Animal Deletion Reversal',
   'Infrastructure',
   'Stock Purchase',
+  'Stock Adjustment',
   'Salaries',
+  'Salary Reversal',
   'Maintenance',
   'Utilities',
   'Transportation',
@@ -201,7 +210,8 @@ const CAPITAL_TRANSACTION_TYPES = [
   'Other Income',
   'Other Expense',
   'Loan Borrowed',
-  'Loan Returned'
+  'Loan Returned',
+  'Liability Reversal'
 ];
 
 // User roles
@@ -237,6 +247,7 @@ module.exports = {
   DESIGNATIONS,
   BANKS,
   EMPLOYEE_STATUSES,
+  EMPLOYEE_SEPARATED_STATUSES,
   ADVANCE_TYPES,
   TREATMENT_TYPES,
   DIAGNOSIS_TYPES,

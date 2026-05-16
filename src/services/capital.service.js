@@ -84,9 +84,20 @@ const addTransaction = async (userId, amount, type, description, reference = nul
     );
   }
 
-  await capital.addTransaction(amount, type, description, reference, userId, investmentSubtype);
+  // Sprint 5: use the atomic static so concurrent writers don't lose each
+  // other's history entries. The doc-level method (capital.addTransaction)
+  // still exists on the schema for backward compat but no production code
+  // path calls it after this change.
+  const updated = await Capital.atomicAddTransaction({
+    amount,
+    type,
+    description,
+    reference,
+    createdBy: userId,
+    investmentSubtype
+  });
 
-  return capital;
+  return updated || capital;
 };
 
 /**
@@ -144,21 +155,29 @@ const getSummary = async (userId) => {
  * Update transaction invoice URL
  */
 const updateTransactionInvoice = async (userId, transactionId, invoiceUrl) => {
-  const capital = await Capital.findOne({});
+  // Sprint 5: atomic positional update — single write that won't lose
+  // concurrent invoice uploads on different transactions in the same
+  // capital singleton.
+  const updated = await Capital.findOneAndUpdate(
+    { 'history._id': transactionId },
+    {
+      $set: {
+        'history.$.invoiceUrl': invoiceUrl,
+        lastUpdated: new Date()
+      }
+    },
+    { new: true }
+  );
 
-  if (!capital) {
-    throw ApiError.notFound('Capital not found.');
+  if (!updated) {
+    // Distinguish "no capital" from "no such transaction" for a useful error.
+    const capital = await Capital.findOne({}, '_id').lean();
+    throw capital
+      ? ApiError.notFound('Transaction not found.')
+      : ApiError.notFound('Capital not found.');
   }
 
-  const transaction = capital.history.id(transactionId);
-  if (!transaction) {
-    throw ApiError.notFound('Transaction not found.');
-  }
-
-  transaction.invoiceUrl = invoiceUrl;
-  await capital.save();
-
-  return capital;
+  return updated;
 };
 
 module.exports = {

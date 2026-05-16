@@ -106,6 +106,10 @@ const stockSchema = new mongoose.Schema(
   },
   {
     timestamps: true,
+    // Sprint 5: optimistic concurrency on .save() so two parallel stock
+    // edits can't silently overwrite each other. Atomic $inc paths (Sprint 2)
+    // are unaffected — they're already race-safe.
+    optimisticConcurrency: true
   }
 );
 

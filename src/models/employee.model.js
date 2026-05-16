@@ -55,6 +55,11 @@ const employeeSchema = new mongoose.Schema(
     dateOfLeaving: {
       type: Date
     },
+    leavingReason: {
+      type: String,
+      trim: true,
+      maxlength: [1000, 'Leaving reason cannot exceed 1000 characters']
+    },
     salary: {
       type: Number,
       required: [true, 'Salary is required'],
@@ -108,7 +113,11 @@ const employeeSchema = new mongoose.Schema(
     }
   },
   {
-    timestamps: true
+    timestamps: true,
+    // Sprint 5: optimistic concurrency for legacy doc-mutate-save advance
+    // balance flows. Atomic helpers (utils/atomic.js) bypass this — they're
+    // already race-safe by construction.
+    optimisticConcurrency: true
   }
 );
 

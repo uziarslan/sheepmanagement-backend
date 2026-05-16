@@ -43,8 +43,8 @@ const create = asyncHandler(async (req, res) => {
  * DELETE /api/advances/:id
  */
 const remove = asyncHandler(async (req, res) => {
-  await advanceService.remove(req.params.id);
-  
+  await advanceService.remove(req.params.id, req.user.id);
+
   res.status(HTTP_STATUS.OK).json(
     successResponse(null, 'Advance record deleted successfully')
   );

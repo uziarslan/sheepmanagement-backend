@@ -1,6 +1,13 @@
 const { Liability, Capital } = require('../models');
 const logger = require('../utils/logger');
-const { ApiError, getPaginationOptions, getSortOptions, getPaginationMeta, logAction } = require('../utils');
+const {
+  ApiError,
+  getPaginationOptions,
+  getSortOptions,
+  getPaginationMeta,
+  logAction,
+  withTransaction
+} = require('../utils');
 
 /**
  * Get all liabilities with filters
@@ -89,7 +96,10 @@ const getLenderOutstanding = async (lenderName, _userId) => {
 };
 
 /**
- * Create liability record and update capital
+ * Create liability record and update capital.
+ * Atomic: liability insert + capital write commit together. Earlier code did
+ * a "create then capital, on failure delete the liability" dance — fragile if
+ * the cleanup itself failed. The transaction makes this a no-op on failure.
  */
 const create = async (liabilityData, userId) => {
   if (liabilityData.type === 'Returned') {
@@ -101,27 +111,33 @@ const create = async (liabilityData, userId) => {
     }
   }
 
-  const liability = await Liability.create({
-    ...liabilityData,
-    createdBy: userId
-  });
+  const liability = await withTransaction(async (session) => {
+    const [created] = await Liability.create(
+      [{ ...liabilityData, createdBy: userId }],
+      session ? { session } : {}
+    );
 
-  // Update capital: Borrow -> add to balance, Return -> deduct
-  try {
-    const capital = await Capital.findOne({});
-    if (capital) {
-      const amount = liabilityData.type === 'Borrowed' ? liabilityData.amount : -liabilityData.amount;
-      const txType = liabilityData.type === 'Borrowed' ? 'Loan Borrowed' : 'Loan Returned';
-      const desc = liabilityData.type === 'Borrowed'
-        ? `Loan from ${liabilityData.lenderName}`
-        : `Loan return to ${liabilityData.lenderName}`;
-      await capital.addTransaction(amount, txType, desc, liability._id, userId);
+    const amount = liabilityData.type === 'Borrowed' ? liabilityData.amount : -liabilityData.amount;
+    const txType = liabilityData.type === 'Borrowed' ? 'Loan Borrowed' : 'Loan Returned';
+    const desc = liabilityData.type === 'Borrowed'
+      ? `Loan from ${liabilityData.lenderName}`
+      : `Loan return to ${liabilityData.lenderName}`;
+
+    const result = await Capital.atomicAddTransaction({
+      amount,
+      type: txType,
+      description: desc,
+      reference: String(created._id),
+      createdBy: userId
+    }, session);
+    if (!result) {
+      throw ApiError.badRequest(
+        'Capital not initialized. Initialize capital before recording liabilities.'
+      );
     }
-  } catch (error) {
-    logger.error('Failed to update capital for liability:', error);
-    await Liability.findByIdAndDelete(liability._id);
-    throw ApiError.internal('Failed to record capital. Please try again.');
-  }
+
+    return created;
+  });
 
   logAction({
     userId,
@@ -147,18 +163,37 @@ const remove = async (id, userId) => {
     throw ApiError.notFound('Liability record not found');
   }
 
-  // Reverse the capital transaction before deleting
-  try {
-    const capital = await Capital.getOrCreate(userId);
-    // Reverse the original transaction by adding back the liability amount
-    const description = `Liability reversal - ${liability.type} (${liability.description || ''})`;
-    await capital.addTransaction(liability.amount, 'Liability Reversal', description, String(liability._id), userId);
-  } catch (err) {
-    // Log error but continue with deletion
-    logger.error('Failed to reverse capital transaction for liability:', err.message || err);
-  }
+  // Atomic: capital reversal + liability delete commit together.
+  // Sign rule (audit L2): reversal is the opposite of the original posting.
+  await withTransaction(async (session) => {
+    const reversalAmount = liability.type === 'Borrowed'
+      ? -liability.amount
+      : liability.amount;
+    const description = `Liability reversal - ${liability.type} from/to ${liability.lenderName}`;
 
-  await Liability.findByIdAndDelete(id);
+    await Capital.atomicAddTransaction({
+      amount: reversalAmount,
+      type: 'Liability Reversal',
+      description,
+      reference: String(liability._id),
+      createdBy: userId
+    }, session);
+
+    await Liability.findByIdAndDelete(id, session ? { session } : {});
+  });
+
+  logAction({
+    userId,
+    action: 'Liability Deleted',
+    entityType: 'Liability',
+    entityId: liability._id,
+    metadata: {
+      lenderName: liability.lenderName,
+      type: liability.type,
+      amount: liability.amount
+    }
+  });
+
   return liability;
 };
 
@@ -186,7 +221,7 @@ const getSummary = async (_userId, startDate, endDate) => {
 
   const totalBorrowed = summary.find(s => s._id === 'Borrowed')?.total || 0;
   const totalReturned = summary.find(s => s._id === 'Returned')?.total || 0;
-  const lenderBalances = await getLenderBalances(userId);
+  const lenderBalances = await getLenderBalances();
   const outstanding = lenderBalances.reduce((sum, l) => sum + l.balance, 0);
 
   return {

@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { animalController } = require('../controllers');
-const { authenticate, authorize, validate } = require('../middleware');
+const { authenticate, authorize, validate, idempotency } = require('../middleware');
 const { animalValidation } = require('../validations');
 
 // All routes require authentication
@@ -17,6 +17,7 @@ router.get(
 // POST /api/animals/bulk - Bulk create animals (MUST come before /:id pattern)
 router.post(
   '/bulk',
+  idempotency,
   validate(animalValidation.bulkCreate),
   animalController.bulkCreate
 );
@@ -25,6 +26,8 @@ router.post(
 router.post(
   '/bulk-mark-sold',
   authorize('Admin'),
+  idempotency,
+  validate(animalValidation.bulkMarkAsSold),
   animalController.bulkMarkAsSold
 );
 
@@ -44,6 +47,7 @@ router.get(
 // POST /api/animals - Create animal
 router.post(
   '/',
+  idempotency,
   validate(animalValidation.createAnimal),
   animalController.create
 );
@@ -61,15 +65,20 @@ router.put(
   animalController.update
 );
 
-// PUT /api/animals/:id/move-to-pen - Move animal to pen
+// PUT /api/animals/:id/move-to-pen - Move animal to pen (Admin, Manager)
 router.put(
   '/:id/move-to-pen',
+  authorize('Admin', 'Manager'),
+  validate(animalValidation.moveToPen),
   animalController.moveToPen
 );
 
-// PUT /api/animals/:id/declare-dead - Declare animal as dead
+// PUT /api/animals/:id/declare-dead - Declare animal as dead (Admin, Manager — financial impact)
 router.put(
   '/:id/declare-dead',
+  authorize('Admin', 'Manager'),
+  idempotency,
+  validate(animalValidation.declareDead),
   animalController.declareDead
 );
 
@@ -77,12 +86,31 @@ router.put(
 router.put(
   '/:id/mark-sold',
   authorize('Admin'),
+  idempotency,
+  validate(animalValidation.markAsSold),
   animalController.markAsSold
 );
 
-// DELETE /api/animals/:id - Delete animal
+// PUT /api/animals/:id/restore-from-dead - Reverse a declare-dead (Admin only)
+router.put(
+  '/:id/restore-from-dead',
+  authorize('Admin'),
+  idempotency,
+  animalController.restoreFromDead
+);
+
+// PUT /api/animals/:id/restore-from-sold - Reverse a mark-sold (Admin only)
+router.put(
+  '/:id/restore-from-sold',
+  authorize('Admin'),
+  idempotency,
+  animalController.restoreFromSold
+);
+
+// DELETE /api/animals/:id - Delete animal (Admin only — reverses capital)
 router.delete(
   '/:id',
+  authorize('Admin'),
   animalController.remove
 );
 

@@ -7,6 +7,9 @@ const { authenticate, authorize } = require('../middleware');
 router.use(authenticate);
 router.use(authorize('Admin'));
 
+// GET /api/audit-logs/facets - distinct values for filter dropdowns
+router.get('/facets', auditController.getAuditFacets);
+
 // GET /api/audit-logs - Get audit logs with optional filters
 router.get('/', auditController.getAuditLogs);
 
