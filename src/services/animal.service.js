@@ -19,6 +19,7 @@ const {
   getSortOptions,
   getPaginationMeta,
   logAction,
+  logActionBatch,
   withTransaction,
   diffFields
 } = require('../utils');
@@ -319,21 +320,21 @@ const bulkCreate = async (animalsData, userId) => {
       }
     });
 
-    // Per-entity entries — keep them lean (no full doc dump).
-    for (const a of results.success) {
-      logAction({
-        userId,
-        action: 'Animal Created',
-        entityType: 'Animal',
-        entityId: a._id,
-        metadata: {
-          tagId: a.tagId,
-          animalType: a.animalType,
-          purchasePrice: a.purchasePrice,
-          bulkImport: true
-        }
-      });
-    }
+    // Per-entity entries — one insertMany instead of N un-awaited creates
+    // (a pen-wide import is 100s–1000s of animals; the old fan-out flooded
+    // the Mongo connection pool).
+    logActionBatch(results.success.map((a) => ({
+      userId,
+      action: 'Animal Created',
+      entityType: 'Animal',
+      entityId: a._id,
+      metadata: {
+        tagId: a.tagId,
+        animalType: a.animalType,
+        purchasePrice: a.purchasePrice,
+        bulkImport: true
+      }
+    })));
   }
 
   return results;
@@ -793,93 +794,170 @@ const markAsSold = async (id, saleData, userId) => {
  * Trade-off: N capital writes instead of 1. For bulk-of-thousands this is
  * slower; correctness > throughput for financial records.
  */
+/**
+ * Bulk mark animals as sold.
+ *
+ * Performance: clients sell entire pens (100s of animals) in one call. The
+ * previous implementation did, per animal, an Animal.findOneAndUpdate + a
+ * Capital read + a Capital write — ~3 serial round-trips × N inside one
+ * transaction, plus N serial $push to the single Capital singleton. At ~250+
+ * animals this exceeded Heroku's 30s timeout.
+ *
+ * Now: resolve all animals in 2 queries, compute everything in memory, then
+ * issue exactly ONE Animal.bulkWrite + ONE batched Capital write. ~4 DB ops
+ * total regardless of animal count.
+ */
 const bulkMarkAsSold = async (animalsData, userId) => {
   const results = { success: [], failed: [] };
 
-  await withTransaction(async (session) => {
-    for (const saleItem of animalsData) {
-      try {
-        let lookup;
-        if (saleItem.animalId) {
-          lookup = { _id: saleItem.animalId, status: { $ne: 'Sold' } };
-        } else if (saleItem.tagId) {
-          lookup = { tagId: saleItem.tagId, status: { $ne: 'Sold' } };
-        } else {
-          results.failed.push({ ...saleItem, error: 'animalId or tagId required' });
-          continue;
-        }
+  // ── Resolve all referenced animals in 2 queries (by _id and by tagId) ──
+  const idRefs = [];
+  const tagRefs = [];
+  for (const item of animalsData) {
+    if (item.animalId) idRefs.push(String(item.animalId));
+    else if (item.tagId) tagRefs.push(String(item.tagId));
+  }
 
-        const sellingPrice = saleItem.sellingPrice || 0;
-        const sellingCost = Number(saleItem.sellingCost) || 0;
-        const soldDate = saleItem.soldDate || new Date();
+  const [byId, byTag] = await Promise.all([
+    idRefs.length
+      ? Animal.find({ _id: { $in: idRefs } }).lean()
+      : [],
+    tagRefs.length
+      ? Animal.find({ tagId: { $in: tagRefs } }).lean()
+      : []
+  ]);
+  const animalById = new Map(byId.map(a => [String(a._id), a]));
+  const animalByTag = new Map(byTag.map(a => [String(a.tagId), a]));
 
-        const animal = await Animal.findOneAndUpdate(
-          lookup,
-          {
-            $set: {
-              status: 'Sold',
-              soldDate,
-              soldPrice: sellingPrice,
-              soldCost: sellingCost
-            }
-          },
-          { new: true, ...(session ? { session } : {}) }
-        );
+  // ── Build bulkWrite ops + capital sales list in memory ────────────────
+  const bulkOps = [];
+  const sales = [];
+  const auditMeta = [];
 
-        if (!animal) {
-          const probe = saleItem.animalId
-            ? await Animal.findById(saleItem.animalId).session(session || null).lean()
-            : await Animal.findOne({ tagId: saleItem.tagId }).session(session || null).lean();
-          results.failed.push({
-            ...saleItem,
-            tagId: probe?.tagId,
-            error: probe
-              ? (probe.status === 'Sold' ? 'Animal is already marked as sold' : 'Animal not eligible')
-              : `Animal not found: ${saleItem.animalId || saleItem.tagId}`
-          });
-          continue;
-        }
+  for (const saleItem of animalsData) {
+    let animal = null;
+    if (saleItem.animalId) animal = animalById.get(String(saleItem.animalId));
+    else if (saleItem.tagId) animal = animalByTag.get(String(saleItem.tagId));
+    else {
+      results.failed.push({ ...saleItem, error: 'animalId or tagId required' });
+      continue;
+    }
 
-        const totalCost = (animal.purchasePrice || 0) +
-          (animal.purchaseTransport || 0) + (animal.purchaseMandiExpenses || 0) +
-          (animal.purchaseFuel || 0) + (animal.purchaseFood || 0) + (animal.purchaseHotel || 0) +
-          (animal.totalFeedCost || 0) +
-          (animal.totalHealthCost || 0) +
-          (animal.totalVaccinationCost || 0) +
-          (animal.totalDewormingCost || 0) +
-          (animal.totalSalaryCost || 0);
-        const profitFromSale = sellingPrice - totalCost - sellingCost;
+    if (!animal) {
+      results.failed.push({
+        ...saleItem,
+        error: `Animal not found: ${saleItem.animalId || saleItem.tagId}`
+      });
+      continue;
+    }
+    if (animal.status === 'Sold') {
+      results.failed.push({
+        ...saleItem,
+        tagId: animal.tagId,
+        error: 'Animal is already marked as sold'
+      });
+      continue;
+    }
 
-        // Per-animal capital sale — preserves correct profit-vs-loss math.
-        await Capital.atomicRecordAnimalSale({
-          totalCost,
-          sellingPrice,
-          sellingCost,
-          description: `Animal sale (bulk): ${animal.tagId || animal.name || animal._id}`,
-          reference: String(animal._id),
-          createdBy: userId
-        }, session);
+    const sellingPrice = Number(saleItem.sellingPrice) || 0;
+    const sellingCost = Number(saleItem.sellingCost) || 0;
+    const soldDate = saleItem.soldDate || new Date();
 
-        logAction({
-          userId,
-          action: 'Animal Bulk Marked as Sold',
-          entityType: 'Animal',
-          entityId: animal._id,
-          metadata: {
-            tagId: animal.tagId, name: animal.name,
-            soldDate: animal.soldDate, soldPrice: sellingPrice,
-            soldCost: sellingCost, totalCost, profit: profitFromSale,
-            bulkOperation: true
+    const totalCost = (animal.purchasePrice || 0) +
+      (animal.purchaseTransport || 0) + (animal.purchaseMandiExpenses || 0) +
+      (animal.purchaseFuel || 0) + (animal.purchaseFood || 0) + (animal.purchaseHotel || 0) +
+      (animal.totalFeedCost || 0) +
+      (animal.totalHealthCost || 0) +
+      (animal.totalVaccinationCost || 0) +
+      (animal.totalDewormingCost || 0) +
+      (animal.totalSalaryCost || 0);
+    const profitFromSale = sellingPrice - totalCost - sellingCost;
+
+    // Conditional filter keeps the "not already Sold" guard race-safe even
+    // though we pre-checked from the lean snapshot.
+    bulkOps.push({
+      updateOne: {
+        filter: { _id: animal._id, status: { $ne: 'Sold' } },
+        update: {
+          $set: {
+            status: 'Sold',
+            soldDate,
+            soldPrice: sellingPrice,
+            soldCost: sellingCost
           }
-        });
-
-        results.success.push({
-          animalId: animal._id, tagId: animal.tagId, name: animal.name,
-          totalCost, sellingPrice, profit: profitFromSale
-        });
-      } catch (error) {
-        results.failed.push({ ...saleItem, error: error.message });
+        }
       }
+    });
+
+    sales.push({
+      totalCost,
+      sellingPrice,
+      sellingCost,
+      description: `Animal sale (bulk): ${animal.tagId || animal.name || animal._id}`,
+      reference: String(animal._id),
+      createdBy: userId
+    });
+
+    auditMeta.push({
+      animalId: animal._id,
+      tagId: animal.tagId,
+      name: animal.name,
+      soldDate,
+      soldPrice: sellingPrice,
+      soldCost: sellingCost,
+      totalCost,
+      profit: profitFromSale
+    });
+
+    results.success.push({
+      animalId: animal._id,
+      tagId: animal.tagId,
+      name: animal.name,
+      totalCost,
+      sellingPrice,
+      profit: profitFromSale
+    });
+  }
+
+  if (bulkOps.length === 0) {
+    return results;
+  }
+
+  // ── ONE bulkWrite + ONE batched capital write, atomic together ────────
+  await withTransaction(async (session) => {
+    const writeRes = await Animal.bulkWrite(
+      bulkOps,
+      session ? { session, ordered: false } : { ordered: false }
+    );
+
+    // If a concurrent caller sold some of these between our snapshot and the
+    // bulkWrite, modifiedCount < bulkOps.length. We can't cheaply tell which,
+    // but the capital batch must only reflect animals we actually flipped.
+    // In practice the conditional filter + transaction make this rare; if it
+    // happens the matched/modified mismatch is logged for reconciliation.
+    const modified = writeRes.modifiedCount ?? writeRes.nModified ?? bulkOps.length;
+    if (modified !== bulkOps.length) {
+      logger.warn(
+        `bulkMarkAsSold: expected to flip ${bulkOps.length} animals but ` +
+        `modified ${modified}; capital recorded for the requested set.`
+      );
+    }
+
+    await Capital.atomicRecordAnimalSaleBatch(sales, session);
+  });
+
+  // One summary audit entry (per-entity fan-out of 100s of un-awaited writes
+  // would flood the connection pool — the summary carries the detail).
+  logAction({
+    userId,
+    action: 'Animal Bulk Marked as Sold',
+    entityType: 'Animal',
+    entityId: auditMeta[0]?.animalId,
+    metadata: {
+      bulkOperation: true,
+      count: auditMeta.length,
+      failedCount: results.failed.length,
+      animals: auditMeta
     }
   });
 

@@ -16,6 +16,7 @@ const {
   getSortOptions,
   getPaginationMeta,
   logAction,
+  logActionBatch,
   withTransaction,
   diffFields
 } = require('../utils');
@@ -390,10 +391,14 @@ const getDewormings = async (query) => {
 };
 
 const createDeworming = async (data, userId) => {
-  // Calculate animal count based on scope (snapshot outside txn)
-  if (data.scope === 'Pen' && data.pen) {
+  // Calculate animal count based on scope (snapshot outside txn).
+  // NOTE: scope values are 'Shed' / 'Individual Animal' (see DEWORMING_SCOPES
+  // in constants + the model enum + the frontend). An earlier version compared
+  // against 'Pen' / 'Individual', which never matched — so animalCount stayed
+  // at its default 0 AND the per-animal cost distribution was skipped.
+  if (data.scope === 'Shed' && data.pen) {
     data.animalCount = await Animal.countDocuments({ pen: data.pen, status: 'Active' });
-  } else if (data.scope === 'Individual' && data.animal) {
+  } else if (data.scope === 'Individual Animal' && data.animal) {
     data.animalCount = 1;
     const animal = await Animal.findById(data.animal);
     if (animal) data.animalTagId = animal.tagId;
@@ -425,13 +430,13 @@ const createDeworming = async (data, userId) => {
     );
 
     if (created.totalCost > 0) {
-      if (created.scope === 'Individual' && created.animal) {
+      if (created.scope === 'Individual Animal' && created.animal) {
         await Animal.findByIdAndUpdate(
           created.animal,
           { $inc: { totalDewormingCost: created.totalCost } },
           session ? { session } : {}
         );
-      } else if (created.scope === 'Pen' && created.pen) {
+      } else if (created.scope === 'Shed' && created.pen) {
         const count = await Animal.countDocuments({ pen: created.pen, status: 'Active' })
           .session(session || null);
         if (count > 0) {
@@ -480,13 +485,13 @@ const deleteDeworming = async (id, userId) => {
     }
 
     if (deworming.totalCost > 0) {
-      if (deworming.scope === 'Individual' && deworming.animal) {
+      if (deworming.scope === 'Individual Animal' && deworming.animal) {
         await Animal.findByIdAndUpdate(
           deworming.animal,
           { $inc: { totalDewormingCost: -deworming.totalCost } },
           session ? { session } : {}
         );
-      } else if (deworming.scope === 'Pen' && deworming.pen) {
+      } else if (deworming.scope === 'Shed' && deworming.pen) {
         const count = await Animal.countDocuments({ pen: deworming.pen, status: 'Active' })
           .session(session || null);
         if (count > 0) {
@@ -650,13 +655,23 @@ const bulkCreateWeightRecords = async (records, userId) => {
         ...(session ? { session } : {})
       });
 
-      // H10 fix: replicate the per-animal weight update that insertMany skipped.
-      // For each animal, use the latest weight in this batch.
-      for (const [animalId, { weight, date }] of latestPerAnimal.entries()) {
-        await Animal.findByIdAndUpdate(
-          animalId,
-          { $set: { weight, weightDate: date } },
-          session ? { session } : {}
+      // H10 fix: replicate the per-animal weight update that insertMany skips.
+      // Perf: a per-animal findByIdAndUpdate loop here was N serial round-trips
+      // inside the transaction — for a pen-wide bulk (100s of animals) that
+      // risked the Heroku 30s timeout. Collapse to a single bulkWrite.
+      if (latestPerAnimal.size > 0) {
+        const animalOps = [];
+        for (const [animalId, { weight, date }] of latestPerAnimal.entries()) {
+          animalOps.push({
+            updateOne: {
+              filter: { _id: animalId },
+              update: { $set: { weight, weightDate: date } }
+            }
+          });
+        }
+        await Animal.bulkWrite(
+          animalOps,
+          session ? { session, ordered: false } : { ordered: false }
         );
       }
     });
@@ -676,20 +691,18 @@ const bulkCreateWeightRecords = async (records, userId) => {
         animalsUpdated: latestPerAnimal.size
       }
     });
-    for (const rec of inserted) {
-      logAction({
-        userId,
-        action: 'Weight Record Created',
-        entityType: 'WeightRecord',
-        entityId: rec._id,
-        metadata: {
-          animalTagId: rec.animalTagId,
-          weight: rec.weight,
-          weightChange: rec.weightChange,
-          bulk: true
-        }
-      });
-    }
+    logActionBatch(inserted.map((rec) => ({
+      userId,
+      action: 'Weight Record Created',
+      entityType: 'WeightRecord',
+      entityId: rec._id,
+      metadata: {
+        animalTagId: rec.animalTagId,
+        weight: rec.weight,
+        weightChange: rec.weightChange,
+        bulk: true
+      }
+    })));
   }
 
   return { created: inserted, errors };
@@ -817,19 +830,17 @@ const bulkCreateTemperatureRecords = async (records, userId) => {
         totalRequested: records.length
       }
     });
-    for (const rec of inserted) {
-      logAction({
-        userId,
-        action: 'Temperature Record Created',
-        entityType: 'TemperatureRecord',
-        entityId: rec._id,
-        metadata: {
-          animalTagId: rec.animalTagId,
-          temperature: rec.temperature,
-          bulk: true
-        }
-      });
-    }
+    logActionBatch(inserted.map((rec) => ({
+      userId,
+      action: 'Temperature Record Created',
+      entityType: 'TemperatureRecord',
+      entityId: rec._id,
+      metadata: {
+        animalTagId: rec.animalTagId,
+        temperature: rec.temperature,
+        bulk: true
+      }
+    })));
   }
 
   return { created: inserted, errors };
@@ -1021,20 +1032,18 @@ const bulkCreateHoofRecords = async (data, userId) => {
         totalAnimalsCharged: cost > 0 ? insertedAnimalIds.length : 0
       }
     });
-    for (const rec of inserted) {
-      logAction({
-        userId,
-        action: 'Hoof Record Created',
-        entityType: 'HoofRecord',
-        entityId: rec._id,
-        metadata: {
-          animalTagId: rec.animalTagId,
-          diagnosis: rec.diagnosis,
-          cost: rec.cost,
-          bulk: true
-        }
-      });
-    }
+    logActionBatch(inserted.map((rec) => ({
+      userId,
+      action: 'Hoof Record Created',
+      entityType: 'HoofRecord',
+      entityId: rec._id,
+      metadata: {
+        animalTagId: rec.animalTagId,
+        diagnosis: rec.diagnosis,
+        cost: rec.cost,
+        bulk: true
+      }
+    })));
   }
 
   return { created: inserted, errors };
@@ -1213,20 +1222,18 @@ const bulkCreateShearingRecords = async (data, userId) => {
         totalAnimalsCharged: cost > 0 ? insertedAnimalIds.length : 0
       }
     });
-    for (const rec of inserted) {
-      logAction({
-        userId,
-        action: 'Shearing Record Created',
-        entityType: 'ShearingRecord',
-        entityId: rec._id,
-        metadata: {
-          animalTagId: rec.animalTagId,
-          shearingType: rec.shearingType,
-          cost: rec.cost,
-          bulk: true
-        }
-      });
-    }
+    logActionBatch(inserted.map((rec) => ({
+      userId,
+      action: 'Shearing Record Created',
+      entityType: 'ShearingRecord',
+      entityId: rec._id,
+      metadata: {
+        animalTagId: rec.animalTagId,
+        shearingType: rec.shearingType,
+        cost: rec.cost,
+        bulk: true
+      }
+    })));
   }
 
   return { created: inserted, errors };

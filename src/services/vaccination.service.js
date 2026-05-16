@@ -430,35 +430,58 @@ const deleteApplication = async (id, userId) => {
       );
     }
 
-    // Reverse vaccination cost from animals
+    // Reverse vaccination cost from animals.
+    //
+    // Bug fix: scope is stored as 'Pen' | 'Individual' | 'Multiple' (see
+    // VACCINATION_SCOPES + applyVaccine). This block previously checked
+    // 'All Animals' | 'Pen' | 'Individual Animal', so deleting an Individual
+    // or Multiple vaccination NEVER reversed the cost — money silently stayed
+    // on the animals. We now match the real scope values AND mirror the exact
+    // distribution applyVaccine used (floor to paisa + remainder on one
+    // animal) so the reversal nets to the original totalCost.
     if (application.totalCost > 0) {
-      if (application.scope === 'All Animals') {
-        const count = await Animal.countDocuments({ status: 'Active' }).session(session || null);
-        if (count > 0) {
-          const perAnimal = application.totalCost / count;
-          await Animal.updateMany(
-            { status: 'Active' },
-            { $inc: { totalVaccinationCost: -perAnimal } },
-            session ? { session } : {}
-          );
+      const scope = application.scope;
+      let filter = null;
+      if (scope === 'Pen' && application.pen) {
+        filter = { pen: application.pen, status: 'Active' };
+      } else if (scope === 'Multiple' && application.animals && application.animals.length) {
+        filter = { _id: { $in: application.animals }, status: 'Active' };
+      } else if (scope === 'Individual' && application.animal) {
+        filter = { _id: application.animal };
+      }
+
+      if (filter) {
+        const animalCount = application.animalCount
+          || (scope === 'Individual' ? 1 : 0);
+        if (animalCount > 0) {
+          const costPerAnimal =
+            Math.floor((application.totalCost / animalCount) * 100) / 100;
+          const remainder =
+            Math.round((application.totalCost - costPerAnimal * animalCount) * 100) / 100;
+
+          if (costPerAnimal > 0) {
+            await Animal.updateMany(
+              filter,
+              { $inc: { totalVaccinationCost: -costPerAnimal } },
+              session ? { session } : {}
+            );
+          }
+          // The remainder paisa went to one animal at apply-time; we can't
+          // know which, so subtract it from any one in the set — the
+          // aggregate reversal is still exactly application.totalCost.
+          if (remainder > 0) {
+            const one = await Animal.findOne(filter, '_id')
+              .session(session || null)
+              .lean();
+            if (one) {
+              await Animal.findByIdAndUpdate(
+                one._id,
+                { $inc: { totalVaccinationCost: -remainder } },
+                session ? { session } : {}
+              );
+            }
+          }
         }
-      } else if (application.scope === 'Pen' && application.pen) {
-        const count = await Animal.countDocuments({ pen: application.pen, status: 'Active' })
-          .session(session || null);
-        if (count > 0) {
-          const perAnimal = application.totalCost / count;
-          await Animal.updateMany(
-            { pen: application.pen, status: 'Active' },
-            { $inc: { totalVaccinationCost: -perAnimal } },
-            session ? { session } : {}
-          );
-        }
-      } else if (application.scope === 'Individual Animal' && application.animal) {
-        await Animal.findByIdAndUpdate(
-          application.animal,
-          { $inc: { totalVaccinationCost: -application.totalCost } },
-          session ? { session } : {}
-        );
       }
     }
 

@@ -340,6 +340,88 @@ capitalSchema.statics.atomicRecordAnimalSale = async function (params, session =
 };
 
 /**
+ * Batched animal-sale recorder. Equivalent to calling atomicRecordAnimalSale
+ * once per sale, but collapses N×2 round-trips (read loss + write) into
+ * exactly 2 (one loss read, one write). Critical for bulk-mark-sold over
+ * hundreds of animals — the per-call version serially $push'd to this single
+ * singleton document N times and blew Heroku's 30s request budget.
+ *
+ * The loss/profit apportioning is order-dependent (each profitable sale first
+ * pays down accumulated `loss`, then adds to `profit`). We replicate that
+ * exactly by simulating the running loss in memory, seeded from one read.
+ *
+ * @param {Array<{totalCost,sellingPrice,sellingCost,description,reference,createdBy}>} sales
+ * @param {import('mongoose').ClientSession?} session
+ * @returns {{count:number, totalProfitDelta:number, totalLossDelta:number}}
+ */
+capitalSchema.statics.atomicRecordAnimalSaleBatch = async function (sales, session = null) {
+  if (!Array.isArray(sales) || sales.length === 0) {
+    return { count: 0, totalProfitDelta: 0, totalLossDelta: 0 };
+  }
+
+  const current = await this.findOne({}, 'loss').session(session || null).lean();
+  let runningLoss = current?.loss ?? 0;
+
+  let aggAvailable = 0;
+  let aggInvested = 0;
+  let aggLoss = 0;
+  let aggProfit = 0;
+  const historyEntries = [];
+  const now = new Date();
+
+  for (const s of sales) {
+    const totalCost = Number(s.totalCost) || 0;
+    const sellingPrice = Number(s.sellingPrice) || 0;
+    const sellingCost = Number(s.sellingCost) || 0;
+    const profitFromSale = sellingPrice - totalCost - sellingCost;
+
+    if (profitFromSale > 0) {
+      const amountToLoss = Math.min(profitFromSale, runningLoss);
+      aggLoss += -amountToLoss;
+      aggProfit += profitFromSale - amountToLoss;
+      runningLoss -= amountToLoss;
+    } else if (profitFromSale < 0) {
+      const lossAmt = Math.abs(profitFromSale);
+      aggLoss += lossAmt;
+      runningLoss += lossAmt;
+    }
+
+    aggAvailable += totalCost + sellingPrice - sellingCost;
+    aggInvested += -totalCost;
+
+    historyEntries.push({
+      amount: sellingPrice,
+      type: 'Animal Sale',
+      date: now,
+      description: s.description || 'Animal sale',
+      reference: s.reference || null,
+      createdBy: s.createdBy || null
+    });
+  }
+
+  const inc = { availableAmount: aggAvailable };
+  if (aggInvested !== 0) inc.investedAmount = aggInvested;
+  if (aggLoss !== 0) inc.loss = aggLoss;
+  if (aggProfit !== 0) inc.profit = aggProfit;
+
+  await this.findOneAndUpdate(
+    {},
+    {
+      $inc: inc,
+      $push: { history: { $each: historyEntries } },
+      $set: { lastUpdated: now }
+    },
+    _opts(session)
+  );
+
+  return {
+    count: sales.length,
+    totalProfitDelta: aggProfit,
+    totalLossDelta: aggLoss
+  };
+};
+
+/**
  * Reverse a previously-applied addLoss. Subtracts from `loss` (clamped at 0)
  * and pushes a counter ledger entry. Used by restore-from-dead.
  */
