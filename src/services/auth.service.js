@@ -10,34 +10,38 @@ const hashRefreshToken = (token) => {
 };
 
 /**
- * Register a new user
+ * Register a new user.
+ *
+ * Bootstrap: when no Admin exists yet, the first registrant is promoted to
+ * 'Admin' so the operator can manage the deployment. All subsequent public
+ * registrations are created as 'Manager'.
  */
 const register = async (userData) => {
-  // Check if email already exists
   const existingUser = await User.findOne({ email: userData.email });
   if (existingUser) {
     throw ApiError.conflict('Email already registered');
   }
 
-  // Create user
+  const adminCount = await User.countDocuments({ role: 'Admin' });
+  const isBootstrap = adminCount === 0;
+
   const user = await User.create({
     name: userData.name,
     email: userData.email,
     password: userData.password,
     farmName: userData.farmName,
-    phone: userData.phone
+    phone: userData.phone,
+    role: isBootstrap ? 'Admin' : 'Manager'
   });
 
-  // Generate tokens
   const tokens = jwt.generateTokenPair(user);
-
-  // Save hashed refresh token
   user.refreshToken = hashRefreshToken(tokens.refreshToken);
   await user.save();
 
   return {
     user: user.toJSON(),
-    tokens
+    tokens,
+    bootstrap: isBootstrap
   };
 };
 

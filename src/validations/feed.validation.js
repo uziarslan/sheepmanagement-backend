@@ -44,11 +44,14 @@ const updateRecipe = {
   }).min(1)
 };
 
+// Apply accepts either single `pen` (back-compat) OR `pens` array (multi-pen
+// mode). At least one of the two must be present.
 const applyRecipe = {
   body: Joi.object().keys({
     recipe: Joi.string().hex().length(24).required(),
     recipeName: Joi.string(),
-    pen: Joi.string().hex().length(24).required(),
+    pen: Joi.string().hex().length(24),
+    pens: Joi.array().items(Joi.string().hex().length(24)).min(1).max(50),
     penName: Joi.string(),
     date: Joi.date().default(Date.now),
     animalCount: Joi.number().integer().min(0),
@@ -65,7 +68,19 @@ const applyRecipe = {
     totalCost: Joi.number().min(0),
     costPerAnimal: Joi.number().min(0),
     notes: Joi.string().max(1000).allow('', null)
-  })
+  }).or('pen', 'pens')
+};
+
+// Range form mirrors applyRecipe but with date bounds instead of a single date.
+const applyRecipeRange = {
+  body: Joi.object().keys({
+    recipe: Joi.string().hex().length(24).required(),
+    pen: Joi.string().hex().length(24),
+    pens: Joi.array().items(Joi.string().hex().length(24)).min(1).max(50),
+    dateStart: Joi.date().required(),
+    dateEnd: Joi.date().required(),
+    notes: Joi.string().max(1000).allow('', null)
+  }).or('pen', 'pens')
 };
 
 const getRecipes = {
@@ -95,6 +110,7 @@ module.exports = {
   createRecipe,
   updateRecipe,
   applyRecipe,
+  applyRecipeRange,
   getRecipes,
   getApplications
 };

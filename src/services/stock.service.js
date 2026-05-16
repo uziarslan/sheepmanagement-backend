@@ -1,6 +1,70 @@
-const { Stock, Capital } = require('../models');
+const {
+  Stock,
+  Capital,
+  FeedRecipe,
+  FeedApplication,
+  VaccineRecipe,
+  VaccineApplication,
+  Vaccination,
+  Treatment,
+  Deworming
+} = require('../models');
 const logger = require('../utils/logger');
-const { ApiError, getPaginationOptions, getSortOptions, getPaginationMeta, logAction } = require('../utils');
+const {
+  ApiError,
+  getPaginationOptions,
+  getSortOptions,
+  getPaginationMeta,
+  logAction,
+  withTransaction,
+  diffFields
+} = require('../utils');
+
+/**
+ * Check whether a stock document is referenced by recipes or historical
+ * application/treatment records. Returns null when safe to delete, otherwise
+ * a structured summary of where it's used.
+ */
+const findStockReferences = async (stockId) => {
+  const [
+    feedRecipeCount,
+    feedApplicationCount,
+    vaccineRecipeCount,
+    vaccineApplicationCount,
+    vaccinationCount,
+    treatmentCount,
+    dewormingCount
+  ] = await Promise.all([
+    FeedRecipe.countDocuments({ 'ingredients.stock': stockId }),
+    FeedApplication.countDocuments({ 'ingredients.stock': stockId }),
+    VaccineRecipe.countDocuments({ 'medicines.medicine': stockId }),
+    VaccineApplication.countDocuments({ 'medicineUsed.medicine': stockId }),
+    Vaccination.countDocuments({ 'medicines.medicine': stockId }),
+    Treatment.countDocuments({ 'medicines.medicine': stockId }),
+    Deworming.countDocuments({ 'medicines.medicine': stockId })
+  ]);
+
+  const total =
+    feedRecipeCount +
+    feedApplicationCount +
+    vaccineRecipeCount +
+    vaccineApplicationCount +
+    vaccinationCount +
+    treatmentCount +
+    dewormingCount;
+
+  if (total === 0) return null;
+
+  return {
+    feedRecipes: feedRecipeCount,
+    feedApplications: feedApplicationCount,
+    vaccineRecipes: vaccineRecipeCount,
+    vaccineApplications: vaccineApplicationCount,
+    vaccinations: vaccinationCount,
+    treatments: treatmentCount,
+    dewormings: dewormingCount
+  };
+};
 
 /**
  * Get all stocks with filters
@@ -76,40 +140,42 @@ const create = async (stockData, userId) => {
   delete dataForStock.loadingUnloading;
   dataForStock.totalPrice = totalCost;
 
-  const stock = await Stock.create({
-    ...dataForStock,
-    createdBy: userId
-  });
+  const stock = await withTransaction(async (session) => {
+    const [created] = await Stock.create(
+      [{ ...dataForStock, createdBy: userId }],
+      session ? { session } : {}
+    );
 
-  // Deduct from capital: totalPrice + transportation + loadingUnloading (Infrastructure for Assets, Stock Purchase for others)
-  try {
-    const capital = await Capital.findOne({});
-    if (capital && totalCost > 0) {
+    if (totalCost > 0) {
       const isAsset = stockData.category === 'Assets';
       const txType = isAsset ? 'Infrastructure' : 'Stock Purchase';
       let desc = isAsset
-        ? `Asset (${stockData.assetType || 'Others'}): ${stock.productName}`
-        : `Stock ${stock.productName} purchased - Qty: ${stockData.packQuantity} ${stockData.unit}`;
+        ? `Asset (${stockData.assetType || 'Others'}): ${created.productName}`
+        : `Stock ${created.productName} purchased - Qty: ${stockData.packQuantity} ${stockData.unit}`;
       if (transport > 0 || loading > 0) {
         const parts = [];
         if (transport > 0) parts.push(`Transport: Rs.${transport}`);
         if (loading > 0) parts.push(`Loading: Rs.${loading}`);
         desc += ` (${parts.join(', ')})`;
       }
-      await capital.addTransaction(
-        -totalCost, // includes base price + transport + loading
-        txType,
-        desc,
-        stock._id,
-        userId
-      );
-    }
-  } catch (error) {
-    // Log error but don't fail the request
-    logger.error('Failed to update capital for stock purchase:', error);
-  }
 
-  // Create audit log
+      const result = await Capital.atomicAddTransaction({
+        amount: -totalCost,
+        type: txType,
+        description: desc,
+        reference: String(created._id),
+        createdBy: userId
+      }, session);
+      if (!result) {
+        throw ApiError.badRequest(
+          'Capital not initialized. Initialize capital before recording stock purchases.'
+        );
+      }
+    }
+
+    return created;
+  });
+
   logAction({
     userId,
     action: 'Stock Created',
@@ -140,6 +206,9 @@ const update = async (id, updateData, userId) => {
   if (!stock) {
     throw ApiError.notFound('Stock item not found');
   }
+
+  // Capture before-state for AL3 audit diff (lean snapshot — frozen).
+  const beforeDoc = stock.toObject();
 
   const oldOpeningAmount = Number(stock.openingStockAmount) || 0;
   const oldOpeningQty = Number(stock.openingStockQty) || 0;
@@ -175,32 +244,48 @@ const update = async (id, updateData, userId) => {
   await stock.save();
 
   // Sync capital: update the original purchase transaction amount + balances.
+  // Sprint 5: switched from findOne+mutate+save() to atomic array-positional
+  // $set + $inc so concurrent stock edits can't lose each other's writes.
   try {
     const newAmount = Number(stock.openingStockAmount) || 0;
-    const delta = newAmount - oldOpeningAmount; // positive => more deducted, negative => refund
+    const delta = newAmount - oldOpeningAmount; // +ve = more deducted, -ve = refund
     if (delta !== 0) {
-      const capital = await Capital.findOne({});
-      if (capital) {
-        const isAsset = stock.category === 'Assets';
-        const txType = isAsset ? 'Infrastructure' : 'Stock Purchase';
-        const tx = capital.history.find(
-          (t) => String(t.reference) === String(stock._id) && t.type === txType
-        );
-        if (tx) {
-          tx.amount = -newAmount;
-          tx.description = `Stock ${stock.productName} - cost updated to Rs.${newAmount.toLocaleString()} (was Rs.${oldOpeningAmount.toLocaleString()})`;
-          capital.availableAmount -= delta;
-          if (['Stock Purchase', 'Infrastructure'].includes(tx.type)) {
-            capital.investedAmount = Math.max(0, capital.investedAmount + delta);
-          }
-          capital.lastUpdated = new Date();
-          await capital.save();
-        }
+      const isAsset = stock.category === 'Assets';
+      const txType = isAsset ? 'Infrastructure' : 'Stock Purchase';
+
+      const inc = { availableAmount: -delta };
+      if (['Stock Purchase', 'Infrastructure'].includes(txType)) {
+        inc.investedAmount = delta;
       }
+
+      await Capital.findOneAndUpdate(
+        {
+          'history.reference': String(stock._id),
+          'history.type': txType
+        },
+        {
+          $set: {
+            'history.$.amount': -newAmount,
+            'history.$.description':
+              `Stock ${stock.productName} - cost updated to Rs.${newAmount.toLocaleString()} (was Rs.${oldOpeningAmount.toLocaleString()})`,
+            lastUpdated: new Date()
+          },
+          $inc: inc
+        }
+      );
     }
   } catch (err) {
     logger.error('Failed to sync capital after stock update:', err);
   }
+
+  // AL3: log the actual before/after diff over the fields the caller touched,
+  // plus the derived recompute fields (rate/qty) which a price edit changes.
+  const trackedKeys = [
+    ...Object.keys(updateData),
+    'totalQuantity', 'costPerUnit', 'openingRatePerUnit',
+    'openingStockAmount', 'openingStockQty', 'currentQty'
+  ];
+  const diff = diffFields(beforeDoc, stock.toObject(), trackedKeys);
 
   logAction({
     userId,
@@ -210,7 +295,7 @@ const update = async (id, updateData, userId) => {
     metadata: {
       productName: stock.productName,
       category: stock.category,
-      changes: updateData
+      diff
     }
   });
 
@@ -240,6 +325,20 @@ const remove = async (id, userId) => {
     throw ApiError.notFound('Stock item not found');
   }
 
+  // Block deletion if the stock is still referenced anywhere. Mark inactive
+  // (PUT with isActive=false) if you want to retire it without losing history.
+  const refs = await findStockReferences(id);
+  if (refs) {
+    const where = Object.entries(refs)
+      .filter(([, n]) => n > 0)
+      .map(([k, n]) => `${k}: ${n}`)
+      .join(', ');
+    throw ApiError.badRequest(
+      `Cannot delete "${stock.productName}" — it is referenced by ${where}. ` +
+      `Remove or replace those references first, or set isActive=false to retire it.`
+    );
+  }
+
   const openingQty = Number(stock.openingStockQty) || 0;
   const currentQty = Number(stock.currentQty) || 0;
   const ratePerUnit = Number(stock.openingRatePerUnit) || 0;
@@ -247,50 +346,66 @@ const remove = async (id, userId) => {
   const consumedCost = consumedQty * ratePerUnit;
   const refund = currentQty * ratePerUnit;
 
-  try {
-    const capital = await Capital.findOne({});
-    if (capital) {
-      const isAsset = stock.category === 'Assets';
-      const txType = isAsset ? 'Infrastructure' : 'Stock Purchase';
-      const tx = capital.history.find(
-        (t) => String(t.reference) === String(stock._id) && t.type === txType
-      );
+  // Atomic: capital adjust + stock delete commit together via atomic operators
+  // (Sprint 4). The previous version did a findOne → mutate → save() which
+  // races under concurrency on standalone Mongo. We now use $pull / array-
+  // positional $set + $inc so the singleton update is a single write.
+  await withTransaction(async (session) => {
+    const sessOpt = session ? { session } : {};
+    const isAsset = stock.category === 'Assets';
+    const txType = isAsset ? 'Infrastructure' : 'Stock Purchase';
 
-      if (tx) {
-        const originalAbs = Math.abs(tx.amount);
-        const isInvestmentType = ['Stock Purchase', 'Infrastructure'].includes(tx.type);
+    // Find the original purchase transaction so we know its current amount.
+    // The race window between this read and the update below is closed by
+    // a `history.$._id` positional filter on the update — if the tx was
+    // already pulled/mutated by another caller, our update no-ops cleanly.
+    const cap = await Capital.findOne(
+      { 'history.reference': String(stock._id), 'history.type': txType },
+      { 'history.$': 1 }
+    ).session(session || null).lean();
+    const tx = cap?.history?.[0];
 
-        if (consumedQty <= 0) {
-          // Nothing was used — drop the transaction entirely and refund the full amount.
-          capital.availableAmount += originalAbs;
-          if (isInvestmentType) {
-            capital.investedAmount = Math.max(0, capital.investedAmount - originalAbs);
-          }
-          capital.history.pull(tx._id);
-        } else {
-          // Partial consumption — refund only the unused portion.
-          // Cap refund at the original transaction amount to avoid over-refunding
-          // if the rate has been edited upward post-consumption.
-          const refundClamped = Math.min(originalAbs, refund);
-          capital.availableAmount += refundClamped;
-          if (isInvestmentType) {
-            capital.investedAmount = Math.max(0, capital.investedAmount - refundClamped);
-          }
-          tx.amount = -consumedCost;
-          tx.description =
-            `Stock ${stock.productName} deleted - ${consumedQty} ${stock.unit} already consumed kept as expense, ` +
-            `${currentQty} ${stock.unit} unused refunded (Rs.${refundClamped.toLocaleString()})`;
-        }
+    if (tx) {
+      const originalAbs = Math.abs(tx.amount);
+      const isInvestmentType = ['Stock Purchase', 'Infrastructure'].includes(tx.type);
 
-        capital.lastUpdated = new Date();
-        await capital.save();
+      if (consumedQty <= 0) {
+        // Nothing consumed — pull the tx and refund the full deduction.
+        const inc = { availableAmount: originalAbs };
+        if (isInvestmentType) inc.investedAmount = -originalAbs;
+        await Capital.findOneAndUpdate(
+          {},
+          {
+            $pull: { history: { _id: tx._id } },
+            $inc: inc,
+            $set: { lastUpdated: new Date() }
+          },
+          sessOpt
+        );
+      } else {
+        // Partial consumption — rewrite the tx in place; refund the unused.
+        const refundClamped = Math.min(originalAbs, refund);
+        const inc = { availableAmount: refundClamped };
+        if (isInvestmentType) inc.investedAmount = -refundClamped;
+        await Capital.findOneAndUpdate(
+          { 'history._id': tx._id },
+          {
+            $set: {
+              'history.$.amount': -consumedCost,
+              'history.$.description':
+                `Stock ${stock.productName} deleted - ${consumedQty} ${stock.unit} already consumed kept as expense, ` +
+                `${currentQty} ${stock.unit} unused refunded (Rs.${refundClamped.toLocaleString()})`,
+              lastUpdated: new Date()
+            },
+            $inc: inc
+          },
+          sessOpt
+        );
       }
     }
-  } catch (err) {
-    logger.error('Failed to revert capital for stock deletion:', err);
-  }
 
-  await Stock.findByIdAndDelete(id);
+    await Stock.findByIdAndDelete(id, sessOpt);
+  });
 
   logAction({
     userId,
@@ -312,33 +427,86 @@ const remove = async (id, userId) => {
 };
 
 /**
- * Adjust stock quantity
+ * Adjust stock quantity.
+ *
+ * 'reason' is required by validation. Each adjustment posts a 'Stock
+ * Adjustment' line to capital.history for ledger visibility:
+ *   - deduct (spoilage/loss/theft): recognized as a loss (capital.loss += value).
+ *   - add    (found inventory / correction): recognized as a gain (capital.profit += value).
+ * availableAmount and totalCapital are NOT touched — the cash flow happened at
+ * purchase time. We're only recognizing the write-down / write-up here.
  */
 const adjustStock = async (id, quantity, type, reason, userId) => {
-  const stock = await Stock.findById(id);
-
-  if (!stock) {
+  // Pre-fetch product info for messages + ledger calculation
+  const meta = await Stock.findById(id, 'productName unit category openingRatePerUnit currentQty').lean();
+  if (!meta) {
     throw ApiError.notFound('Stock item not found');
   }
-  // Debug log: record adjustment intent and current qty
-  try {
-    logger.info(`[stock.service] adjustStock called by user=${userId} id=${id} type=${type} qty=${quantity} reason=${reason} currentQty=${stock.currentQty}`);
-  } catch (e) {
-    logger.error('Failed to log adjustStock call', e);
-  }
 
-  if (type === 'deduct') {
-    if (quantity > stock.currentQty) {
-      throw ApiError.badRequest(`Insufficient stock. Available: ${stock.currentQty} ${stock.unit}`);
+  logger.info(
+    `[stock.service] adjustStock user=${userId} id=${id} type=${type} ` +
+    `qty=${quantity} reason=${reason} currentQty=${meta.currentQty}`
+  );
+
+  const ratePerUnit = Number(meta.openingRatePerUnit) || 0;
+  const adjustmentValue = quantity * ratePerUnit;
+
+  const stock = await withTransaction(async (session) => {
+    let updatedStock;
+    if (type === 'deduct') {
+      // Atomic deduct — only succeeds if currentQty >= quantity
+      updatedStock = await Stock.findOneAndUpdate(
+        { _id: id, currentQty: { $gte: quantity } },
+        { $inc: { currentQty: -quantity } },
+        { new: true, ...(session ? { session } : {}) }
+      );
+      if (!updatedStock) {
+        throw ApiError.badRequest(
+          `Insufficient stock. Available: ${meta.currentQty} ${meta.unit}`
+        );
+      }
+    } else {
+      updatedStock = await Stock.findByIdAndUpdate(
+        id,
+        { $inc: { currentQty: quantity } },
+        { new: true, ...(session ? { session } : {}) }
+      );
     }
-    stock.currentQty -= quantity;
-  } else {
-    stock.currentQty += quantity;
-  }
 
-  await stock.save();
+    // Post capital ledger entry recognizing the write-down (deduct) or
+    // write-up (add). Atomic — uses findOneAndUpdate, not save().
+    if (adjustmentValue > 0) {
+      const sign = type === 'deduct' ? -1 : 1;
+      const desc =
+        type === 'deduct'
+          ? `Stock write-down: ${updatedStock.productName} -${quantity} ${updatedStock.unit} (${reason})`
+          : `Stock write-up: ${updatedStock.productName} +${quantity} ${updatedStock.unit} (${reason})`;
 
-  // Create audit log
+      await Capital.findOneAndUpdate(
+        {},
+        {
+          $push: {
+            history: {
+              amount: sign * adjustmentValue,
+              type: 'Stock Adjustment',
+              date: new Date(),
+              description: desc,
+              reference: String(updatedStock._id),
+              createdBy: userId || null
+            }
+          },
+          $inc: type === 'deduct'
+            ? { loss: adjustmentValue }
+            : { profit: adjustmentValue },
+          $set: { lastUpdated: new Date() }
+        },
+        session ? { session } : {}
+      );
+    }
+
+    return updatedStock;
+  });
+
   logAction({
     userId,
     action: 'Stock Quantity Adjusted',
@@ -348,9 +516,11 @@ const adjustStock = async (id, quantity, type, reason, userId) => {
       productName: stock.productName,
       category: stock.category,
       adjustmentType: type,
-      quantity: quantity,
+      quantity,
       unit: stock.unit,
-      reason: reason,
+      ratePerUnit,
+      ledgerValue: adjustmentValue,
+      reason,
       newQuantity: stock.currentQty
     }
   });

@@ -41,6 +41,20 @@ router.put(
 // DELETE /api/employees/:id - Delete employee
 router.delete('/:id', employeeController.remove);
 
+// PATCH /api/employees/:id/separate - Resign / terminate / retire / inactive
+router.patch(
+  '/:id/separate',
+  validate(employeeValidation.separateEmployee),
+  employeeController.separate
+);
+
+// PATCH /api/employees/:id/reactivate - Reactivate a separated employee
+router.patch(
+  '/:id/reactivate',
+  validate(employeeValidation.reactivateEmployee),
+  employeeController.reactivate
+);
+
 // PATCH /api/employees/:id/reset-password - Reset employee login password
 router.patch(
   '/:id/reset-password',

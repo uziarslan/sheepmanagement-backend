@@ -158,6 +158,30 @@ const recalculateAnimalCosts = asyncHandler(async (req, res) => {
   );
 });
 
+/**
+ * Restore an animal from Dead status (undo declare-dead).
+ * PUT /api/animals/:id/restore-from-dead
+ */
+const restoreFromDead = asyncHandler(async (req, res) => {
+  const result = await animalService.restoreFromDead(req.params.id, req.user.id);
+
+  res.status(HTTP_STATUS.OK).json(
+    successResponse(result, 'Animal restored from Dead status; capital loss reversed')
+  );
+});
+
+/**
+ * Restore an animal from Sold status (undo mark-sold).
+ * PUT /api/animals/:id/restore-from-sold
+ */
+const restoreFromSold = asyncHandler(async (req, res) => {
+  const result = await animalService.restoreFromSold(req.params.id, req.user.id);
+
+  res.status(HTTP_STATUS.OK).json(
+    successResponse(result, 'Animal restored from Sold status; capital sale reversed')
+  );
+});
+
 module.exports = {
   getAll,
   getById,
@@ -171,5 +195,7 @@ module.exports = {
   declareDead,
   markAsSold,
   bulkMarkAsSold,
+  restoreFromDead,
+  restoreFromSold,
   recalculateAnimalCosts
 };

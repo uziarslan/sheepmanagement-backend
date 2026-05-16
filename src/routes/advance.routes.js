@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { advanceController } = require('../controllers');
-const { authenticate, authorize, validate } = require('../middleware');
+const { authenticate, authorize, validate, idempotency } = require('../middleware');
 const { advanceValidation } = require('../validations');
 
 // All routes require authentication
@@ -28,6 +28,7 @@ router.get(
 router.post(
   '/',
   authorize('Admin', 'Manager'),
+  idempotency,
   validate(advanceValidation.createAdvance),
   advanceController.create
 );

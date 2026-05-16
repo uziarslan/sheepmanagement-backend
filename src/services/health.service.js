@@ -10,7 +10,16 @@ const {
   Animal,
   Stock
 } = require('../models');
-const { ApiError, getPaginationOptions, getSortOptions, getPaginationMeta, logAction } = require('../utils');
+const {
+  ApiError,
+  getPaginationOptions,
+  getSortOptions,
+  getPaginationMeta,
+  logAction,
+  logActionBatch,
+  withTransaction,
+  diffFields
+} = require('../utils');
 
 // ============ VACCINATION SERVICES ============
 
@@ -211,38 +220,50 @@ const getTreatments = async (query) => {
 };
 
 const createTreatment = async (data, userId) => {
-  // Get animal details
   const animal = await Animal.findById(data.animal);
   if (!animal) throw ApiError.notFound('Animal not found');
 
   data.animalTagId = animal.tagId;
   data.animalName = animal.name;
 
-  const treatment = await Treatment.create({
-    ...data,
-    createdBy: userId
-  });
-
-  // Deduct stock and update animal health cost after treatment is saved
-  if (treatment.medicines && treatment.medicines.length > 0) {
-    for (const med of treatment.medicines) {
-      const stock = await Stock.findById(med.medicine);
-      if (stock) {
-        if (stock.currentQty < med.quantity) {
-          throw ApiError.badRequest(`Insufficient stock for ${stock.productName}`);
+  // Atomic: stock deductions + treatment create + animal cost increment.
+  // H2 fix: if any deduction fails, the treatment is NOT persisted (no orphan).
+  const treatment = await withTransaction(async (session) => {
+    // Deduct stocks first via atomic conditional updates
+    if (data.medicines && data.medicines.length > 0) {
+      for (const med of data.medicines) {
+        const updated = await Stock.findOneAndUpdate(
+          { _id: med.medicine, currentQty: { $gte: med.quantity } },
+          { $inc: { currentQty: -med.quantity } },
+          { new: true, ...(session ? { session } : {}) }
+        );
+        if (!updated) {
+          const probe = await Stock.findById(med.medicine, 'productName currentQty unit')
+            .session(session || null).lean();
+          throw ApiError.badRequest(
+            `Insufficient stock for ${probe?.productName || med.medicine}. ` +
+            `Available: ${probe?.currentQty ?? 0} ${probe?.unit || ''}, Required: ${med.quantity}`
+          );
         }
-        stock.currentQty -= med.quantity;
-        await stock.save();
       }
     }
 
-    // Update animal health cost
-    await Animal.findByIdAndUpdate(treatment.animal, {
-      $inc: { totalHealthCost: treatment.totalAmount }
-    });
-  }
+    const [created] = await Treatment.create(
+      [{ ...data, createdBy: userId }],
+      session ? { session } : {}
+    );
 
-  // Create audit log
+    if (created.totalAmount > 0) {
+      await Animal.findByIdAndUpdate(
+        created.animal,
+        { $inc: { totalHealthCost: created.totalAmount } },
+        session ? { session } : {}
+      );
+    }
+
+    return created;
+  });
+
   logAction({
     userId,
     action: 'Treatment Record Created',
@@ -261,15 +282,21 @@ const createTreatment = async (data, userId) => {
 };
 
 const updateTreatment = async (id, data, userId) => {
+  const beforeDoc = await Treatment.findById(id).lean();
+  if (!beforeDoc) throw ApiError.notFound('Treatment not found');
+
   const treatment = await Treatment.findByIdAndUpdate(
     id,
     { $set: data },
     { new: true, runValidators: true }
   ).populate(['animal', 'veterinarian']);
 
-  if (!treatment) throw ApiError.notFound('Treatment not found');
-  
-  // Create audit log
+  const diff = diffFields(
+    beforeDoc,
+    treatment.toObject ? treatment.toObject() : treatment,
+    Object.keys(data)
+  );
+
   logAction({
     userId,
     action: 'Treatment Record Updated',
@@ -279,36 +306,41 @@ const updateTreatment = async (id, data, userId) => {
       animalTagId: treatment.animalTagId,
       diagnosis: treatment.diagnosis,
       cureStatus: treatment.cureStatus,
-      changes: data
+      diff
     }
   });
-  
+
   return treatment;
 };
 
 const deleteTreatment = async (id, userId) => {
-  const treatment = await Treatment.findByIdAndDelete(id);
+  const treatment = await Treatment.findById(id);
   if (!treatment) throw ApiError.notFound('Treatment record not found');
 
-  // Restore stock quantities
-  if (treatment.medicines && treatment.medicines.length > 0) {
-    for (const med of treatment.medicines) {
-      const stock = await Stock.findById(med.medicine);
-      if (stock) {
-        stock.currentQty += med.quantity;
-        await stock.save();
+  await withTransaction(async (session) => {
+    // Restore stock quantities atomically
+    if (treatment.medicines && treatment.medicines.length > 0) {
+      for (const med of treatment.medicines) {
+        await Stock.findByIdAndUpdate(
+          med.medicine,
+          { $inc: { currentQty: med.quantity } },
+          session ? { session } : {}
+        );
       }
     }
-  }
 
-  // Reverse animal health cost
-  if (treatment.totalAmount > 0) {
-    await Animal.findByIdAndUpdate(treatment.animal, {
-      $inc: { totalHealthCost: -treatment.totalAmount }
-    });
-  }
+    // Reverse animal health cost
+    if (treatment.totalAmount > 0) {
+      await Animal.findByIdAndUpdate(
+        treatment.animal,
+        { $inc: { totalHealthCost: -treatment.totalAmount } },
+        session ? { session } : {}
+      );
+    }
 
-  // Create audit log
+    await Treatment.findByIdAndDelete(id, session ? { session } : {});
+  });
+
   logAction({
     userId,
     action: 'Treatment Record Deleted',
@@ -359,55 +391,68 @@ const getDewormings = async (query) => {
 };
 
 const createDeworming = async (data, userId) => {
-  // Calculate animal count based on scope
-  if (data.scope === 'Pen' && data.pen) {
+  // Calculate animal count based on scope (snapshot outside txn).
+  // NOTE: scope values are 'Shed' / 'Individual Animal' (see DEWORMING_SCOPES
+  // in constants + the model enum + the frontend). An earlier version compared
+  // against 'Pen' / 'Individual', which never matched — so animalCount stayed
+  // at its default 0 AND the per-animal cost distribution was skipped.
+  if (data.scope === 'Shed' && data.pen) {
     data.animalCount = await Animal.countDocuments({ pen: data.pen, status: 'Active' });
-  } else if (data.scope === 'Individual' && data.animal) {
+  } else if (data.scope === 'Individual Animal' && data.animal) {
     data.animalCount = 1;
     const animal = await Animal.findById(data.animal);
     if (animal) data.animalTagId = animal.tagId;
   }
 
-  const deworming = await Deworming.create({
-    ...data,
-    createdBy: userId
-  });
-
-  // Deduct stock and update animal deworming cost after deworming is saved
-  if (deworming.medicines && deworming.medicines.length > 0) {
-    for (const med of deworming.medicines) {
-      const stock = await Stock.findById(med.medicine);
-      if (stock) {
-        if (stock.currentQty < med.quantity) {
-          throw ApiError.badRequest(`Insufficient stock for ${stock.productName}`);
-        }
-        stock.currentQty -= med.quantity;
-        await stock.save();
-      }
-    }
-
-    // Distribute deworming cost to animals
-    if (deworming.totalCost > 0) {
-      if (deworming.scope === 'Individual' && deworming.animal) {
-        // Individual animal - full cost to one animal
-        await Animal.findByIdAndUpdate(deworming.animal, {
-          $inc: { totalDewormingCost: deworming.totalCost }
-        });
-      } else if (deworming.scope === 'Pen' && deworming.pen) {
-        // Pen scope - divide among active animals in pen
-        const activeAnimals = await Animal.find({ pen: deworming.pen, status: 'Active' });
-        if (activeAnimals.length > 0) {
-          const costPerAnimal = deworming.totalCost / activeAnimals.length;
-          await Animal.updateMany(
-            { pen: deworming.pen, status: 'Active' },
-            { $inc: { totalDewormingCost: costPerAnimal } }
+  // Atomic: stock deductions + deworming create + animal cost increment.
+  const deworming = await withTransaction(async (session) => {
+    if (data.medicines && data.medicines.length > 0) {
+      for (const med of data.medicines) {
+        const updated = await Stock.findOneAndUpdate(
+          { _id: med.medicine, currentQty: { $gte: med.quantity } },
+          { $inc: { currentQty: -med.quantity } },
+          { new: true, ...(session ? { session } : {}) }
+        );
+        if (!updated) {
+          const probe = await Stock.findById(med.medicine, 'productName currentQty unit')
+            .session(session || null).lean();
+          throw ApiError.badRequest(
+            `Insufficient stock for ${probe?.productName || med.medicine}. ` +
+            `Available: ${probe?.currentQty ?? 0} ${probe?.unit || ''}, Required: ${med.quantity}`
           );
         }
       }
     }
-  }
 
-  // Create audit log
+    const [created] = await Deworming.create(
+      [{ ...data, createdBy: userId }],
+      session ? { session } : {}
+    );
+
+    if (created.totalCost > 0) {
+      if (created.scope === 'Individual Animal' && created.animal) {
+        await Animal.findByIdAndUpdate(
+          created.animal,
+          { $inc: { totalDewormingCost: created.totalCost } },
+          session ? { session } : {}
+        );
+      } else if (created.scope === 'Shed' && created.pen) {
+        const count = await Animal.countDocuments({ pen: created.pen, status: 'Active' })
+          .session(session || null);
+        if (count > 0) {
+          const perAnimal = created.totalCost / count;
+          await Animal.updateMany(
+            { pen: created.pen, status: 'Active' },
+            { $inc: { totalDewormingCost: perAnimal } },
+            session ? { session } : {}
+          );
+        }
+      }
+    }
+
+    return created;
+  });
+
   logAction({
     userId,
     action: 'Deworming Record Created',
@@ -425,41 +470,44 @@ const createDeworming = async (data, userId) => {
 };
 
 const deleteDeworming = async (id, userId) => {
-  const deworming = await Deworming.findByIdAndDelete(id);
+  const deworming = await Deworming.findById(id);
   if (!deworming) throw ApiError.notFound('Deworming record not found');
 
-  // Restore stock quantities
-  if (deworming.medicines && deworming.medicines.length > 0) {
-    for (const med of deworming.medicines) {
-      const stock = await Stock.findById(med.medicine);
-      if (stock) {
-        stock.currentQty += med.quantity;
-        await stock.save();
-      }
-    }
-  }
-
-  // Reverse animal deworming cost
-  if (deworming.totalCost > 0) {
-    if (deworming.scope === 'Individual' && deworming.animal) {
-      // Individual animal - reverse full cost
-      await Animal.findByIdAndUpdate(deworming.animal, {
-        $inc: { totalDewormingCost: -deworming.totalCost }
-      });
-    } else if (deworming.scope === 'Pen' && deworming.pen) {
-      // Pen scope - reverse distributed cost
-      const activeAnimals = await Animal.find({ pen: deworming.pen, status: 'Active' });
-      if (activeAnimals.length > 0) {
-        const costPerAnimal = deworming.totalCost / activeAnimals.length;
-        await Animal.updateMany(
-          { pen: deworming.pen, status: 'Active' },
-          { $inc: { totalDewormingCost: -costPerAnimal } }
+  await withTransaction(async (session) => {
+    if (deworming.medicines && deworming.medicines.length > 0) {
+      for (const med of deworming.medicines) {
+        await Stock.findByIdAndUpdate(
+          med.medicine,
+          { $inc: { currentQty: med.quantity } },
+          session ? { session } : {}
         );
       }
     }
-  }
 
-  // Create audit log
+    if (deworming.totalCost > 0) {
+      if (deworming.scope === 'Individual Animal' && deworming.animal) {
+        await Animal.findByIdAndUpdate(
+          deworming.animal,
+          { $inc: { totalDewormingCost: -deworming.totalCost } },
+          session ? { session } : {}
+        );
+      } else if (deworming.scope === 'Shed' && deworming.pen) {
+        const count = await Animal.countDocuments({ pen: deworming.pen, status: 'Active' })
+          .session(session || null);
+        if (count > 0) {
+          const perAnimal = deworming.totalCost / count;
+          await Animal.updateMany(
+            { pen: deworming.pen, status: 'Active' },
+            { $inc: { totalDewormingCost: -perAnimal } },
+            session ? { session } : {}
+          );
+        }
+      }
+    }
+
+    await Deworming.findByIdAndDelete(id, session ? { session } : {});
+  });
+
   logAction({
     userId,
     action: 'Deworming Record Deleted',
@@ -558,6 +606,11 @@ const bulkCreateWeightRecords = async (records, userId) => {
   const docs = [];
   const errors = [];
 
+  // Track latest-per-animal in this batch so we can update Animal.weight after
+  // insertMany (replacing the side effect that the single-create pre-save hook
+  // provides — bypassed by insertMany).
+  const latestPerAnimal = new Map(); // animalId → { weight, date }
+
   for (let i = 0; i < records.length; i++) {
     const data = records[i];
     const animal = animalMap.get(String(data.animal));
@@ -571,12 +624,13 @@ const bulkCreateWeightRecords = async (records, userId) => {
     const percentageChange = prevWeight > 0
       ? Number(((weightChange / prevWeight) * 100).toFixed(2))
       : 0;
+    const date = data.date ? new Date(data.date) : new Date();
 
     docs.push({
       animal: data.animal,
       animalTagId: animal.tagId,
       animalName: animal.name,
-      date: data.date ? new Date(data.date) : new Date(),
+      date,
       weight: data.weight,
       previousWeight: prevWeight,
       weightChange: Number(weightChange.toFixed(2)),
@@ -585,23 +639,70 @@ const bulkCreateWeightRecords = async (records, userId) => {
       recordedBy: userId,
       createdBy: userId
     });
+
+    const key = String(data.animal);
+    const existing = latestPerAnimal.get(key);
+    if (!existing || date >= existing.date) {
+      latestPerAnimal.set(key, { weight: data.weight, date });
+    }
   }
 
-  // insertMany bypasses pre-save hooks — single DB write for all records
-  const inserted = docs.length > 0 ? await WeightRecord.insertMany(docs, { ordered: false }) : [];
+  let inserted = [];
+  if (docs.length > 0) {
+    await withTransaction(async (session) => {
+      inserted = await WeightRecord.insertMany(docs, {
+        ordered: false,
+        ...(session ? { session } : {})
+      });
+
+      // H10 fix: replicate the per-animal weight update that insertMany skips.
+      // Perf: a per-animal findByIdAndUpdate loop here was N serial round-trips
+      // inside the transaction — for a pen-wide bulk (100s of animals) that
+      // risked the Heroku 30s timeout. Collapse to a single bulkWrite.
+      if (latestPerAnimal.size > 0) {
+        const animalOps = [];
+        for (const [animalId, { weight, date }] of latestPerAnimal.entries()) {
+          animalOps.push({
+            updateOne: {
+              filter: { _id: animalId },
+              update: { $set: { weight, weightDate: date } }
+            }
+          });
+        }
+        await Animal.bulkWrite(
+          animalOps,
+          session ? { session, ordered: false } : { ordered: false }
+        );
+      }
+    });
+  }
 
   if (inserted.length > 0) {
+    // Summary + per-entity audit entries (AL4).
     logAction({
       userId,
-      action: 'Bulk Weight Records Created',
+      action: 'Bulk Weight Records Summary',
       entityType: 'WeightRecord',
       entityId: inserted[0]._id,
       metadata: {
         totalCreated: inserted.length,
         totalFailed: errors.length,
-        totalRequested: records.length
+        totalRequested: records.length,
+        animalsUpdated: latestPerAnimal.size
       }
     });
+    logActionBatch(inserted.map((rec) => ({
+      userId,
+      action: 'Weight Record Created',
+      entityType: 'WeightRecord',
+      entityId: rec._id,
+      metadata: {
+        animalTagId: rec.animalTagId,
+        weight: rec.weight,
+        weightChange: rec.weightChange,
+        bulk: true
+      }
+    })));
   }
 
   return { created: inserted, errors };
@@ -720,7 +821,7 @@ const bulkCreateTemperatureRecords = async (records, userId) => {
   if (inserted.length > 0) {
     logAction({
       userId,
-      action: 'Bulk Temperature Records Created',
+      action: 'Bulk Temperature Records Summary',
       entityType: 'TemperatureRecord',
       entityId: inserted[0]._id,
       metadata: {
@@ -729,6 +830,17 @@ const bulkCreateTemperatureRecords = async (records, userId) => {
         totalRequested: records.length
       }
     });
+    logActionBatch(inserted.map((rec) => ({
+      userId,
+      action: 'Temperature Record Created',
+      entityType: 'TemperatureRecord',
+      entityId: rec._id,
+      metadata: {
+        animalTagId: rec.animalTagId,
+        temperature: rec.temperature,
+        bulk: true
+      }
+    })));
   }
 
   return { created: inserted, errors };
@@ -865,6 +977,7 @@ const bulkCreateHoofRecords = async (data, userId) => {
 
   const docs = [];
   const errors = [];
+  const insertedAnimalIds = [];
 
   for (let i = 0; i < animalIds.length; i++) {
     const animal = animalMap.get(String(animalIds[i]));
@@ -880,38 +993,78 @@ const bulkCreateHoofRecords = async (data, userId) => {
       date: sharedData.date ? new Date(sharedData.date) : new Date(),
       createdBy: userId
     });
+    insertedAnimalIds.push(animalIds[i]);
   }
 
-  const inserted = docs.length > 0 ? await HoofRecord.insertMany(docs, { ordered: false }) : [];
+  let inserted = [];
+  const cost = Number(sharedData.cost) || 0;
+  if (docs.length > 0) {
+    await withTransaction(async (session) => {
+      inserted = await HoofRecord.insertMany(docs, {
+        ordered: false,
+        ...(session ? { session } : {})
+      });
+
+      // H8 fix: replicate the per-animal totalHealthCost increment that
+      // insertMany skipped (single-create pre-save hook does this when cost > 0).
+      if (cost > 0 && insertedAnimalIds.length > 0) {
+        await Animal.updateMany(
+          { _id: { $in: insertedAnimalIds } },
+          { $inc: { totalHealthCost: cost } },
+          session ? { session } : {}
+        );
+      }
+    });
+  }
 
   if (inserted.length > 0) {
     logAction({
       userId,
-      action: 'Bulk Hoof Records Created',
+      action: 'Bulk Hoof Records Summary',
       entityType: 'HoofRecord',
       entityId: inserted[0]._id,
       metadata: {
         totalCreated: inserted.length,
         totalFailed: errors.length,
         totalRequested: animalIds.length,
-        diagnosis: sharedData.diagnosis
+        diagnosis: sharedData.diagnosis,
+        costPerAnimal: cost,
+        totalAnimalsCharged: cost > 0 ? insertedAnimalIds.length : 0
       }
     });
+    logActionBatch(inserted.map((rec) => ({
+      userId,
+      action: 'Hoof Record Created',
+      entityType: 'HoofRecord',
+      entityId: rec._id,
+      metadata: {
+        animalTagId: rec.animalTagId,
+        diagnosis: rec.diagnosis,
+        cost: rec.cost,
+        bulk: true
+      }
+    })));
   }
 
   return { created: inserted, errors };
 };
 
 const updateHoofRecord = async (id, data, userId) => {
+  const beforeDoc = await HoofRecord.findById(id).lean();
+  if (!beforeDoc) throw ApiError.notFound('Hoof record not found');
+
   const record = await HoofRecord.findByIdAndUpdate(
     id,
     { $set: data },
     { new: true, runValidators: true }
   ).populate(['animal', 'technician']);
 
-  if (!record) throw ApiError.notFound('Hoof record not found');
-  
-  // Create audit log
+  const diff = diffFields(
+    beforeDoc,
+    record.toObject ? record.toObject() : record,
+    Object.keys(data)
+  );
+
   logAction({
     userId,
     action: 'Hoof Record Updated',
@@ -920,10 +1073,10 @@ const updateHoofRecord = async (id, data, userId) => {
     metadata: {
       animalTagId: record.animalTagId,
       diagnosis: record.diagnosis,
-      changes: data
+      diff
     }
   });
-  
+
   return record;
 };
 
@@ -1015,6 +1168,7 @@ const bulkCreateShearingRecords = async (data, userId) => {
 
   const docs = [];
   const errors = [];
+  const insertedAnimalIds = [];
 
   for (let i = 0; i < animalIds.length; i++) {
     const animal = animalMap.get(String(animalIds[i]));
@@ -1030,37 +1184,77 @@ const bulkCreateShearingRecords = async (data, userId) => {
       date: sharedData.date ? new Date(sharedData.date) : new Date(),
       createdBy: userId
     });
+    insertedAnimalIds.push(animalIds[i]);
   }
 
-  const inserted = docs.length > 0 ? await ShearingRecord.insertMany(docs, { ordered: false }) : [];
+  let inserted = [];
+  const cost = Number(sharedData.cost) || 0;
+  if (docs.length > 0) {
+    await withTransaction(async (session) => {
+      inserted = await ShearingRecord.insertMany(docs, {
+        ordered: false,
+        ...(session ? { session } : {})
+      });
+
+      // H8 fix: replicate single-create's $inc totalHealthCost side effect.
+      if (cost > 0 && insertedAnimalIds.length > 0) {
+        await Animal.updateMany(
+          { _id: { $in: insertedAnimalIds } },
+          { $inc: { totalHealthCost: cost } },
+          session ? { session } : {}
+        );
+      }
+    });
+  }
 
   if (inserted.length > 0) {
     logAction({
       userId,
-      action: 'Bulk Shearing Records Created',
+      action: 'Bulk Shearing Records Summary',
       entityType: 'ShearingRecord',
       entityId: inserted[0]._id,
       metadata: {
         totalCreated: inserted.length,
         totalFailed: errors.length,
         totalRequested: animalIds.length,
-        shearingType: sharedData.shearingType
+        shearingType: sharedData.shearingType,
+        costPerAnimal: cost,
+        totalAnimalsCharged: cost > 0 ? insertedAnimalIds.length : 0
       }
     });
+    logActionBatch(inserted.map((rec) => ({
+      userId,
+      action: 'Shearing Record Created',
+      entityType: 'ShearingRecord',
+      entityId: rec._id,
+      metadata: {
+        animalTagId: rec.animalTagId,
+        shearingType: rec.shearingType,
+        cost: rec.cost,
+        bulk: true
+      }
+    })));
   }
 
   return { created: inserted, errors };
 };
 
 const updateShearingRecord = async (id, data, userId) => {
+  const beforeDoc = await ShearingRecord.findById(id).lean();
+  if (!beforeDoc) throw ApiError.notFound('Shearing record not found');
+
   const record = await ShearingRecord.findByIdAndUpdate(
     id,
     { $set: data },
     { new: true, runValidators: true }
   ).populate(['animal', 'technician']);
 
-  if (!record) throw ApiError.notFound('Shearing record not found');
-  
+  const diff = diffFields(
+    beforeDoc,
+    record.toObject ? record.toObject() : record,
+    Object.keys(data)
+  );
+
   logAction({
     userId,
     action: 'Shearing Record Updated',
@@ -1069,7 +1263,7 @@ const updateShearingRecord = async (id, data, userId) => {
     metadata: {
       animalTagId: record.animalTagId,
       shearingType: record.shearingType,
-      changes: data
+      diff
     }
   });
   

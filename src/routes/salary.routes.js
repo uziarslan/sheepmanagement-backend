@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { salaryController } = require('../controllers');
-const { authenticate, authorize, validate } = require('../middleware');
+const { authenticate, authorize, validate, idempotency } = require('../middleware');
 const { salaryValidation } = require('../validations');
 
 // All routes require authentication
@@ -18,8 +18,17 @@ router.get(
 router.post(
   '/',
   authorize('Admin'),
+  idempotency,
   validate(salaryValidation.createSalaryPayment),
   salaryController.createSalaryPayment
+);
+
+// DELETE /api/salaries/:id - Reverse a salary payment (Admin only)
+router.delete(
+  '/:id',
+  authorize('Admin'),
+  idempotency,
+  salaryController.reverseSalaryPayment
 );
 
 module.exports = router;

@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { liabilityController } = require('../controllers');
-const { authenticate, authorize, validate } = require('../middleware');
+const { authenticate, authorize, validate, idempotency } = require('../middleware');
 const { liabilityValidation } = require('../validations');
 
 router.use(authenticate);
@@ -20,6 +20,7 @@ router.get(
 );
 router.post(
   '/',
+  idempotency,
   validate(liabilityValidation.createLiability),
   liabilityController.create
 );

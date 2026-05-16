@@ -1,5 +1,12 @@
 const { Pen, Animal } = require('../models');
-const { ApiError, getPaginationOptions, getSortOptions, getPaginationMeta } = require('../utils');
+const {
+  ApiError,
+  getPaginationOptions,
+  getSortOptions,
+  getPaginationMeta,
+  logAction,
+  diffFields
+} = require('../utils');
 
 /**
  * Get all pens with animal counts
@@ -89,6 +96,18 @@ const create = async (penData, userId) => {
     createdBy: userId
   });
 
+  logAction({
+    userId,
+    action: 'Pen Created',
+    entityType: 'Pen',
+    entityId: pen._id,
+    metadata: {
+      name: pen.name,
+      type: pen.type,
+      capacity: pen.capacity
+    }
+  });
+
   return {
     ...pen.toObject(),
     animalCount: 0,
@@ -99,18 +118,29 @@ const create = async (penData, userId) => {
 /**
  * Update pen
  */
-const update = async (id, updateData) => {
+const update = async (id, updateData, userId) => {
+  const beforeDoc = await Pen.findById(id).lean();
+  if (!beforeDoc) throw ApiError.notFound('Pen not found');
+
   const pen = await Pen.findByIdAndUpdate(
     id,
     { $set: updateData },
     { new: true, runValidators: true }
   );
 
-  if (!pen) {
-    throw ApiError.notFound('Pen not found');
-  }
-
   const animalCount = await Animal.countDocuments({ pen: id, status: 'Active' });
+
+  const diff = diffFields(beforeDoc, pen.toObject(), Object.keys(updateData));
+  logAction({
+    userId,
+    action: 'Pen Updated',
+    entityType: 'Pen',
+    entityId: pen._id,
+    metadata: {
+      name: pen.name,
+      diff
+    }
+  });
 
   return {
     ...pen.toObject(),
@@ -122,10 +152,10 @@ const update = async (id, updateData) => {
 /**
  * Delete pen
  */
-const remove = async (id) => {
+const remove = async (id, userId) => {
   // Check for animals in pen
   const animalCount = await Animal.countDocuments({ pen: id, status: 'Active' });
-  
+
   if (animalCount > 0) {
     throw ApiError.badRequest('Cannot delete pen with active animals. Move animals first.');
   }
@@ -135,6 +165,18 @@ const remove = async (id) => {
   if (!pen) {
     throw ApiError.notFound('Pen not found');
   }
+
+  logAction({
+    userId,
+    action: 'Pen Deleted',
+    entityType: 'Pen',
+    entityId: pen._id,
+    metadata: {
+      name: pen.name,
+      type: pen.type,
+      capacity: pen.capacity
+    }
+  });
 
   return pen;
 };
