@@ -2,8 +2,10 @@ const logger = require('../utils/logger');
 const { SalaryPayment, Employee, Capital, Animal } = require('../models');
 const { withTransaction, atomic, ApiError, sampleActiveAnimal } = require('../utils');
 
+const round2 = (n) => Math.round(n * 100) / 100;
+
 const createSalaryPayment = async (data, userId) => {
-  const { employee: employeeId, month, year, paymentDate, paymentMode, advanceDeduction = 0, otherDeductions = 0, notes } = data;
+  const { employee: employeeId, month, year, paymentDate, paymentMode, advanceDeduction = 0, otherDeductions = 0, additionalAmount = 0, payableDays, daysInMonth, notes } = data;
 
   const employee = await Employee.findById(employeeId);
   if (!employee) {
@@ -21,22 +23,51 @@ const createSalaryPayment = async (data, userId) => {
   }
 
   // Compute salary components from employee master data
-  const basicSalary = Number(employee.salary || 0);
-  const allowances = Number(employee.allowances || 0);
-  const grossSalary = basicSalary + allowances;
+  let basicSalary = Number(employee.salary || 0);
+  let allowances = Number(employee.allowances || 0);
+
+  if (basicSalary + allowances <= 0) {
+    throw new Error('Employee salary is not configured');
+  }
+
+  // Optional proration: pay only for days worked (e.g. employee left
+  // mid-month). Falls back to the full month when payableDays is omitted.
+  let isPartial = false;
+  let proratedPayableDays;
+  let totalDaysInMonth;
+  if (payableDays != null) {
+    // Calendar days in the given month, unless explicitly overridden.
+    totalDaysInMonth = Number(daysInMonth) || new Date(year, month, 0).getDate();
+    proratedPayableDays = Number(payableDays);
+    if (proratedPayableDays <= 0) {
+      throw new Error('Payable days must be greater than 0');
+    }
+    if (proratedPayableDays > totalDaysInMonth) {
+      throw new Error('Payable days cannot exceed the number of days in the month');
+    }
+    if (proratedPayableDays < totalDaysInMonth) {
+      isPartial = true;
+      const factor = proratedPayableDays / totalDaysInMonth;
+      basicSalary = round2(basicSalary * factor);
+      allowances = round2(allowances * factor);
+    }
+  }
+
+  const grossSalary = round2(basicSalary + allowances);
 
   if (grossSalary <= 0) {
-    throw new Error('Employee salary is not configured');
+    throw new Error('Gross salary for this period must be greater than 0');
   }
 
   const advDed = Number(advanceDeduction || 0);
   const otherDed = Number(otherDeductions || 0);
+  const addAmt = Number(additionalAmount || 0);
 
   if (advDed > employee.advanceBalance) {
     throw new Error('Advance deduction cannot exceed current advance balance');
   }
 
-  const netSalary = grossSalary - advDed - otherDed;
+  const netSalary = round2(grossSalary - advDed - otherDed + addAmt);
   if (netSalary < 0) {
     throw new Error('Net salary cannot be negative');
   }
@@ -54,7 +85,10 @@ const createSalaryPayment = async (data, userId) => {
         grossSalary,
         advanceDeduction: advDed,
         otherDeductions: otherDed,
+        additionalAmount: addAmt,
         netSalary,
+        isPartial,
+        ...(isPartial ? { payableDays: proratedPayableDays, daysInMonth: totalDaysInMonth } : {}),
         paymentDate: paymentDate || new Date(),
         paymentMode: paymentMode || 'Cash',
         notes,

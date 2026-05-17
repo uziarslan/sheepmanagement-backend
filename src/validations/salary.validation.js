@@ -9,6 +9,11 @@ const createSalaryPayment = {
     paymentMode: Joi.string().valid('Cash', 'Bank Transfer', 'Cheque', 'Other').default('Cash'),
     advanceDeduction: Joi.number().min(0).default(0),
     otherDeductions: Joi.number().min(0).default(0),
+    additionalAmount: Joi.number().min(0).default(0),
+    // Optional proration for an employee paid for only part of the month
+    // (e.g. left mid-month). When omitted, the full month salary is paid.
+    payableDays: Joi.number().min(0.5).max(31),
+    daysInMonth: Joi.number().integer().min(28).max(31),
     notes: Joi.string().allow('', null)
   })
 };
