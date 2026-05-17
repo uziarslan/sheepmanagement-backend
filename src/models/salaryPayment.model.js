@@ -43,10 +43,32 @@ const salaryPaymentSchema = new mongoose.Schema(
       default: 0,
       min: [0, 'Other deductions cannot be negative']
     },
+    // Extra amount added to the final paycheck (bonus, settlement, etc.).
+    additionalAmount: {
+      type: Number,
+      default: 0,
+      min: [0, 'Additional amount cannot be negative']
+    },
     netSalary: {
       type: Number,
       required: [true, 'Net salary is required'],
       min: [0, 'Net salary cannot be negative']
+    },
+    // Prorated / partial payment (e.g. employee left mid-month and is paid
+    // only for the days worked). When false, basic/allowances are the full
+    // month figures from the employee master.
+    isPartial: {
+      type: Boolean,
+      default: false
+    },
+    payableDays: {
+      type: Number,
+      min: [0, 'Payable days cannot be negative']
+    },
+    daysInMonth: {
+      type: Number,
+      min: [1, 'Days in month must be at least 1'],
+      max: [31, 'Days in month cannot exceed 31']
     },
     paymentDate: {
       type: Date,
