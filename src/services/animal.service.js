@@ -41,6 +41,15 @@ const getAll = async (query) => {
   if (query.sex) filter.sex = query.sex;
   if (query.pen) filter.pen = query.pen;
 
+  // Attention-needed filter: animals on the farm for >= N days (by createdAt).
+  if (query.minDaysSinceAdded != null) {
+    const days = Number(query.minDaysSinceAdded);
+    if (Number.isFinite(days) && days >= 0) {
+      const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+      filter.createdAt = { $lte: cutoff };
+    }
+  }
+
   // Search
   if (query.search) {
     filter.$or = [
