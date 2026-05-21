@@ -127,7 +127,11 @@ const getAnimals = {
     breedType: Joi.string().valid(...BREED_TYPES),
     subcategory: Joi.string().valid(...ANIMAL_SUBCATEGORIES),
     sex: Joi.string().valid(...SEX_OPTIONS),
-    pen: Joi.string().hex().length(24)
+    pen: Joi.string().hex().length(24),
+    // Filter: only return animals that have been on the farm for at least
+    // this many days (computed from createdAt). Used for the "85+ days"
+    // attention-needed alert in the Animals list.
+    minDaysSinceAdded: Joi.number().integer().min(0).max(36500)
   })
 };
 
