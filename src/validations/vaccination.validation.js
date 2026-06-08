@@ -21,7 +21,7 @@ const createVaccine = {
     medicines: Joi.array().min(1).items(
       Joi.object({
         medicine: Joi.string().hex().length(24).required(),
-        quantity: Joi.number().min(0.1).required()
+        quantity: Joi.number().min(0.001).required()
       })
     ).required(),
     dosageInstructions: Joi.string().trim(),
@@ -41,7 +41,7 @@ const updateVaccine = {
     medicines: Joi.array().min(1).items(
       Joi.object({
         medicine: Joi.string().hex().length(24).required(),
-        quantity: Joi.number().min(0.1).required()
+        quantity: Joi.number().min(0.001).required()
       })
     ),
     dosageInstructions: Joi.string().trim(),

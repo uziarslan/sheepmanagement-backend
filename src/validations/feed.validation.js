@@ -13,7 +13,7 @@ const createRecipe = {
         unit: Joi.string(),
         ratePerUnit: Joi.number(),
         currentStock: Joi.number(),
-        quantity: Joi.number().required().min(0.1),
+        quantity: Joi.number().required().min(0.001),
         total: Joi.number()
       })
     ).min(1).required()
@@ -36,7 +36,7 @@ const updateRecipe = {
         unit: Joi.string(),
         ratePerUnit: Joi.number(),
         currentStock: Joi.number(),
-        quantity: Joi.number().required().min(0.1),
+        quantity: Joi.number().required().min(0.001),
         total: Joi.number()
       })
     ).min(1),
