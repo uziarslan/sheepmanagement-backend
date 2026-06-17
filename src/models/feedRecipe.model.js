@@ -13,7 +13,7 @@ const ingredientSchema = new mongoose.Schema({
   quantity: {
     type: Number,
     required: true,
-    min: [0.1, 'Quantity must be greater than 0']
+    min: [0.001, 'Quantity must be greater than 0']
   },
   total: Number
 }, { _id: false });

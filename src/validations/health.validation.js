@@ -32,7 +32,7 @@ const createVaccination = {
         medicineName: Joi.string(),
         packSize: Joi.number(),
         currentQty: Joi.number(),
-        quantity: Joi.number().required().min(0.1),
+        quantity: Joi.number().required().min(0.001),
         unit: Joi.string(),
         rate: Joi.number(),
         total: Joi.number()
@@ -60,7 +60,7 @@ const createTreatment = {
         medicineName: Joi.string(),
         rate: Joi.number(),
         unit: Joi.string(),
-        quantity: Joi.number().required().min(0.1),
+        quantity: Joi.number().required().min(0.001),
         total: Joi.number()
       })
     ),
@@ -109,7 +109,7 @@ const createDeworming = {
       Joi.object().keys({
         medicine: Joi.string().hex().length(24).required(),
         medicineName: Joi.string(),
-        quantity: Joi.number().required().min(0.1),
+        quantity: Joi.number().required().min(0.001),
         unit: Joi.string(),
         rate: Joi.number(),
         total: Joi.number()
