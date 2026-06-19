@@ -289,15 +289,34 @@ const bulkCreate = async (animalsData, userId) => {
     results.success = inserted;
 
     // Derive the capital deduction from the actually-persisted animals only.
-    const insertedInvestment = inserted.reduce(
+    // Total = animal purchase price + purchasing expenses (transport/mandi/fuel/
+    // food/hotel). Expenses are already split per-animal by the caller, so we
+    // simply sum the stored fields — matching the single-create path which also
+    // deducts purchasePrice + expenses.
+    const insertedAnimalCost = inserted.reduce(
       (sum, a) => sum + (a.purchasePrice || 0), 0
     );
+    const insertedExpenses = inserted.reduce(
+      (sum, a) =>
+        sum +
+        (a.purchaseTransport || 0) +
+        (a.purchaseMandiExpenses || 0) +
+        (a.purchaseFuel || 0) +
+        (a.purchaseFood || 0) +
+        (a.purchaseHotel || 0),
+      0
+    );
+    const insertedInvestment = insertedAnimalCost + insertedExpenses;
 
     if (insertedInvestment > 0) {
+      const fmt = (n) => Math.round(n).toLocaleString();
+      const description = insertedExpenses > 0
+        ? `Bulk import: ${inserted.length} animal(s) — animals Rs ${fmt(insertedAnimalCost)} + purchasing expenses Rs ${fmt(insertedExpenses)} = Rs ${fmt(insertedInvestment)}`
+        : `Bulk import: ${inserted.length} animal(s) for total Rs ${fmt(insertedInvestment)}`;
       const result = await Capital.atomicAddTransaction({
         amount: -insertedInvestment,
         type: 'Animal Purchase',
-        description: `Bulk import: ${inserted.length} animal(s) for total ${insertedInvestment}`,
+        description,
         reference: null,
         createdBy: userId
       }, session);
