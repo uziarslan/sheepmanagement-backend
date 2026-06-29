@@ -86,6 +86,9 @@ vaccineApplicationSchema.index({ vaccineRecipe: 1 });
 vaccineApplicationSchema.index({ scope: 1 });
 vaccineApplicationSchema.index({ pen: 1 });
 vaccineApplicationSchema.index({ animal: 1 });
+// Multikey index on the embedded animal-id array so the $pull cascade run on
+// every single animal delete ({ animals: id }) is index-backed (audit L-14).
+vaccineApplicationSchema.index({ animals: 1 });
 
 const VaccineApplication = mongoose.model('VaccineApplication', vaccineApplicationSchema);
 

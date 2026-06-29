@@ -1,11 +1,20 @@
 const express = require('express');
 const router = express.Router();
 const { animalController } = require('../controllers');
-const { authenticate, authorize, validate, idempotency } = require('../middleware');
+const { authenticate, authorize, validate, idempotency, createLimiter } = require('../middleware');
 const { animalValidation } = require('../validations');
 
 // All routes require authentication
 router.use(authenticate);
+
+// Stricter throttle for the heavy bulk-write endpoints (audit L-17): a single
+// bulk call can insert/sell hundreds of animals, so it shouldn't share the
+// general per-IP budget freely.
+const bulkLimiter = createLimiter(
+  15 * 60 * 1000, // 15 minutes
+  30,             // 30 bulk operations per window
+  'Too many bulk operations, please slow down and try again shortly.'
+);
 
 // GET /api/animals - Get all animals
 router.get(
@@ -14,9 +23,11 @@ router.get(
   animalController.getAll
 );
 
-// POST /api/animals/bulk - Bulk create animals (MUST come before /:id pattern)
+// POST /api/animals/bulk - Bulk create animals (Admin, Manager — moves capital)
 router.post(
   '/bulk',
+  authorize('Admin', 'Manager'),
+  bulkLimiter,
   idempotency,
   validate(animalValidation.bulkCreate),
   animalController.bulkCreate
@@ -26,6 +37,7 @@ router.post(
 router.post(
   '/bulk-mark-sold',
   authorize('Admin'),
+  bulkLimiter,
   idempotency,
   validate(animalValidation.bulkMarkAsSold),
   animalController.bulkMarkAsSold
@@ -44,9 +56,10 @@ router.get(
   animalController.getByPen
 );
 
-// POST /api/animals - Create animal
+// POST /api/animals - Create animal (Admin, Manager — moves capital)
 router.post(
   '/',
+  authorize('Admin', 'Manager'),
   idempotency,
   validate(animalValidation.createAnimal),
   animalController.create
@@ -58,9 +71,10 @@ router.get(
   animalController.getById
 );
 
-// PUT /api/animals/:id - Update animal
+// PUT /api/animals/:id - Update animal (Admin, Manager)
 router.put(
   '/:id',
+  authorize('Admin', 'Manager'),
   validate(animalValidation.updateAnimal),
   animalController.update
 );

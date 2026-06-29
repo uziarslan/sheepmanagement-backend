@@ -78,6 +78,9 @@ vaccinationSchema.index({ date: -1 });
 vaccinationSchema.index({ scope: 1 });
 vaccinationSchema.index({ pen: 1 });
 vaccinationSchema.index({ animal: 1 });
+// Multikey index on the embedded animal-id array so the $pull cascade run on
+// every single animal delete ({ animals: id }) is index-backed (audit L-14).
+vaccinationSchema.index({ animals: 1 });
 
 // Pre-save middleware to deduct stock
 vaccinationSchema.pre('save', async function (next) {

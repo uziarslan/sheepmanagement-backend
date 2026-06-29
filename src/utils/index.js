@@ -8,6 +8,7 @@ const { withTransaction } = require('./withTransaction');
 const atomic = require('./atomic');
 const { sampleActiveAnimal } = require('./randomAnimal');
 const { diffFields } = require('./diff');
+const animalCosts = require('./animalCosts');
 
 module.exports = {
   logger,
@@ -18,6 +19,7 @@ module.exports = {
   atomic,
   sampleActiveAnimal,
   diffFields,
+  animalCosts,
   ...helpers,
   ...auditLogger
 };

@@ -12,7 +12,7 @@ const {
   HoofRecord,
   ShearingRecord
 } = require('../models');
-const logger = require('../utils/logger');
+const mongoose = require('mongoose');
 const {
   ApiError,
   getPaginationOptions,
@@ -21,8 +21,19 @@ const {
   logAction,
   logActionBatch,
   withTransaction,
-  diffFields
+  diffFields,
+  animalCosts
 } = require('../utils');
+
+// Source statuses from which an animal may transition to Sold / Dead. Terminal
+// states (Sold/Dead/Slaughtered) are excluded so a Dead animal can't be sold and
+// a Sold animal can't be declared dead — both would double-book capital
+// (audit C-1/C-2). 'Returned' is included so legacy returned animals aren't
+// stranded; it has no other lifecycle handling.
+const LIFECYCLE_ELIGIBLE_STATUSES = ['Active', 'Quarantine', 'Returned'];
+// Financially-terminal statuses whose capital impact has already been booked;
+// their status may only be changed through the dedicated restore endpoints.
+const TERMINAL_STATUSES = ['Sold', 'Dead', 'Slaughtered'];
 
 /**
  * Get all animals with filters and pagination
@@ -50,12 +61,15 @@ const getAll = async (query) => {
     }
   }
 
-  // Search
+  // Search. Escape regex metacharacters so user input can't inject a
+  // catastrophic-backtracking pattern (ReDoS) or alter the query semantics
+  // (audit M-12/26). Length is already capped at 100 by Joi.
   if (query.search) {
+    const escaped = String(query.search).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     filter.$or = [
-      { tagId: { $regex: query.search, $options: 'i' } },
-      { name: { $regex: query.search, $options: 'i' } },
-      { electronicId: { $regex: query.search, $options: 'i' } }
+      { tagId: { $regex: escaped, $options: 'i' } },
+      { name: { $regex: escaped, $options: 'i' } },
+      { electronicId: { $regex: escaped, $options: 'i' } }
     ];
   }
 
@@ -140,13 +154,7 @@ const create = async (animalData, userId) => {
     }
   }
 
-  const totalPurchaseCost =
-    (animalData.purchasePrice || 0) +
-    (animalData.purchaseTransport || 0) +
-    (animalData.purchaseMandiExpenses || 0) +
-    (animalData.purchaseFuel || 0) +
-    (animalData.purchaseFood || 0) +
-    (animalData.purchaseHotel || 0);
+  const totalPurchaseCost = animalCosts.purchaseCost(animalData);
 
   const animal = await withTransaction(async (session) => {
     const [created] = await Animal.create(
@@ -251,7 +259,6 @@ const bulkCreate = async (animalsData, userId) => {
 
   // --- 3. Separate valid vs duplicate, then insertMany for valid ones ---
   const toInsert = [];
-  let totalInvestment = 0;
 
   for (const animalData of animalsData) {
     if (animalData.tagId && existingTagSet.has(animalData.tagId)) {
@@ -259,18 +266,25 @@ const bulkCreate = async (animalsData, userId) => {
       continue;
     }
     toInsert.push({ ...animalData, createdBy: userId });
-    totalInvestment += animalData.purchasePrice || 0;
   }
 
   if (toInsert.length === 0) {
     return results;
   }
 
+  // Snapshot the pre-insert (duplicate-tagId) failures so we can rebuild
+  // results.failed idempotently on each transaction attempt — session
+  // .withTransaction may re-run this callback on a transient error, and the
+  // old code push()'d insert failures onto the shared array each time,
+  // duplicating them (audit M-1).
+  const preInsertFailures = [...results.failed];
+
   // Insert + capital deduction inside a transaction so the aggregated capital
   // line matches only the animals that were actually persisted.
   // A4 fix: re-derive totalInvestment from `inserted`, not from `toInsert`.
   await withTransaction(async (session) => {
     let inserted = [];
+    const insertFailures = [];
     try {
       inserted = await Animal.insertMany(toInsert, {
         ordered: false,
@@ -283,9 +297,11 @@ const bulkCreate = async (animalsData, userId) => {
       const writeErrors = err.writeErrors || [];
       for (const we of writeErrors) {
         const failedDoc = toInsert[we.index];
-        results.failed.push({ data: failedDoc, error: we.errmsg || we.message || 'Insert failed' });
+        insertFailures.push({ data: failedDoc, error: we.errmsg || we.message || 'Insert failed' });
       }
     }
+    // Idempotent assignment (not push) so a retry doesn't accumulate duplicates.
+    results.failed = [...preInsertFailures, ...insertFailures];
     results.success = inserted;
 
     // Derive the capital deduction from the actually-persisted animals only.
@@ -392,9 +408,14 @@ const PROTECTED_UPDATE_FIELDS = [
   'totalHealthCost',
   'totalVaccinationCost',
   'totalDewormingCost',
-  'totalSalaryCost'
+  'totalSalaryCost',
+  // Internal field — never client-settable.
+  'soldBatchId'
 ];
-const BLOCKED_STATUSES_VIA_UPDATE = ['Sold', 'Dead', 'Slaughtered'];
+// Statuses that cannot be SET via the generic update path. 'Returned' is
+// included because it has no capital workflow (audit M-3); Sold/Dead/Slaughtered
+// must go through their dedicated endpoints.
+const BLOCKED_STATUSES_VIA_UPDATE = ['Sold', 'Dead', 'Slaughtered', 'Returned'];
 
 const update = async (id, updateData, userId) => {
   // Strip protected fields
@@ -412,6 +433,21 @@ const update = async (id, updateData, userId) => {
   // Capture before-state for AL3 audit diff.
   const beforeDoc = await Animal.findById(id).lean();
   if (!beforeDoc) throw ApiError.notFound('Animal not found');
+
+  // H-7: block changing status when the animal is in a financially-terminal
+  // state. A Sold/Dead/Slaughtered animal may only return to Active through the
+  // dedicated restore endpoints, which reverse its booked capital. Allowing it
+  // here would silently un-do a terminal state with no capital reversal.
+  if (
+    sanitized.status &&
+    sanitized.status !== beforeDoc.status &&
+    TERMINAL_STATUSES.includes(beforeDoc.status)
+  ) {
+    throw ApiError.badRequest(
+      `Cannot change status of a ${beforeDoc.status} animal via update. ` +
+      `Use restore-from-sold / restore-from-dead, which reverse the capital impact first.`
+    );
+  }
 
   // Check for duplicate tagId if being changed
   if (sanitized.tagId) {
@@ -537,12 +573,7 @@ const remove = async (id, userId) => {
     );
   }
 
-  const totalPurchaseCost = (snapshot.purchasePrice || 0) +
-    (snapshot.purchaseTransport || 0) +
-    (snapshot.purchaseMandiExpenses || 0) +
-    (snapshot.purchaseFuel || 0) +
-    (snapshot.purchaseFood || 0) +
-    (snapshot.purchaseHotel || 0);
+  const totalPurchaseCost = animalCosts.purchaseCost(snapshot);
 
   const cascadeCounts = await withTransaction(async (session) => {
     if (snapshot.status !== 'Sold' && totalPurchaseCost > 0) {
@@ -642,7 +673,16 @@ const moveToPen = async (animalId, penId, userId) => {
     throw ApiError.notFound('Pen not found');
   }
 
-  // Check pen capacity
+  // M-9: only animals that occupy pen capacity may be moved. Moving a
+  // Sold/Dead/Slaughtered animal is meaningless and would mis-state occupancy.
+  if (animal.status !== 'Active' && animal.status !== 'Quarantine') {
+    throw ApiError.badRequest(
+      `Cannot move ${animal.tagId} — its status is '${animal.status}'. Only Active/Quarantine animals can be moved.`
+    );
+  }
+
+  // Check pen capacity (best-effort; small check-then-save window remains —
+  // capacity is also re-validated on the generic update path).
   const currentCount = await Animal.countDocuments({ pen: penId, status: 'Active' });
   if (currentCount >= pen.capacity) {
     throw ApiError.badRequest('Pen is at full capacity');
@@ -688,20 +728,24 @@ const declareDead = async (id, deathData, userId) => {
   // Snapshot total cost outside the transaction so the audit log has it.
   const snapshot = await Animal.findById(id);
   if (!snapshot) throw ApiError.notFound('Animal not found');
-  if (snapshot.status === 'Dead') throw ApiError.badRequest('Animal is already marked as dead');
+  // C-2: only non-terminal animals may be declared dead. Killing a Sold animal
+  // would double-book capital (sale already recorded).
+  if (!LIFECYCLE_ELIGIBLE_STATUSES.includes(snapshot.status)) {
+    throw ApiError.badRequest(
+      `Cannot declare ${snapshot.tagId} dead — its status is '${snapshot.status}'. ` +
+      (snapshot.status === 'Dead'
+        ? 'It is already marked dead.'
+        : `Only Active/Quarantine animals can be declared dead; restore it to Active first.`)
+    );
+  }
 
-  const animalTotalCost = snapshot.totalPurchaseCost +
-    (snapshot.totalFeedCost || 0) +
-    (snapshot.totalHealthCost || 0) +
-    (snapshot.totalVaccinationCost || 0) +
-    (snapshot.totalDewormingCost || 0) +
-    (snapshot.totalSalaryCost || 0);
+  const animalTotalCost = animalCosts.totalCost(snapshot);
 
   const animal = await withTransaction(async (session) => {
-    // Atomic transition: only flip if still not Dead. Prevents two parallel
-    // declare-dead requests from each adding the loss twice.
+    // Atomic transition: only flip from an eligible (non-terminal) state.
+    // Prevents two parallel declare-dead requests from each adding the loss twice.
     const updated = await Animal.findOneAndUpdate(
-      { _id: id, status: { $ne: 'Dead' } },
+      { _id: id, status: { $in: LIFECYCLE_ELIGIBLE_STATUSES } },
       {
         $set: {
           status: 'Dead',
@@ -712,7 +756,7 @@ const declareDead = async (id, deathData, userId) => {
       { new: true, ...(session ? { session } : {}) }
     );
     if (!updated) {
-      throw ApiError.badRequest('Animal is already marked as dead or no longer exists');
+      throw ApiError.badRequest('Animal can no longer be declared dead (status changed concurrently).');
     }
 
     if (animalTotalCost > 0) {
@@ -752,21 +796,25 @@ const declareDead = async (id, deathData, userId) => {
 const markAsSold = async (id, saleData, userId) => {
   const snapshot = await Animal.findById(id);
   if (!snapshot) throw ApiError.notFound('Animal not found');
-  if (snapshot.status === 'Sold') throw ApiError.badRequest('Animal is already marked as sold');
+  // C-1: only non-terminal animals may be sold. Selling a Dead animal would
+  // double-book capital (death loss already recorded).
+  if (!LIFECYCLE_ELIGIBLE_STATUSES.includes(snapshot.status)) {
+    throw ApiError.badRequest(
+      `Cannot sell ${snapshot.tagId} — its status is '${snapshot.status}'. ` +
+      (snapshot.status === 'Sold'
+        ? 'It is already sold.'
+        : `Only Active/Quarantine animals can be sold; restore it to Active first.`)
+    );
+  }
 
-  const totalCost = snapshot.totalPurchaseCost +
-    (snapshot.totalFeedCost || 0) +
-    (snapshot.totalHealthCost || 0) +
-    (snapshot.totalVaccinationCost || 0) +
-    (snapshot.totalDewormingCost || 0) +
-    (snapshot.totalSalaryCost || 0);
+  const totalCost = animalCosts.totalCost(snapshot);
   const sellingPrice = Number(saleData.sellingPrice) || 0;
   const sellingCost = Number(saleData.sellingCost) || 0;
   const profitFromSale = sellingPrice - totalCost - sellingCost;
 
   const animal = await withTransaction(async (session) => {
     const updated = await Animal.findOneAndUpdate(
-      { _id: id, status: { $ne: 'Sold' } },
+      { _id: id, status: { $in: LIFECYCLE_ELIGIBLE_STATUSES } },
       {
         $set: {
           status: 'Sold',
@@ -778,7 +826,7 @@ const markAsSold = async (id, saleData, userId) => {
       { new: true, ...(session ? { session } : {}) }
     );
     if (!updated) {
-      throw ApiError.badRequest('Animal is already marked as sold or no longer exists');
+      throw ApiError.badRequest('Animal can no longer be sold (status changed concurrently).');
     }
 
     await Capital.atomicRecordAnimalSale({
@@ -857,10 +905,14 @@ const bulkMarkAsSold = async (animalsData, userId) => {
   const animalById = new Map(byId.map(a => [String(a._id), a]));
   const animalByTag = new Map(byTag.map(a => [String(a.tagId), a]));
 
-  // ── Build bulkWrite ops + capital sales list in memory ────────────────
+  // ── Build candidates + bulkWrite ops in memory ────────────────────────
+  // Each candidate carries everything needed to book capital and audit, keyed
+  // by animal _id so we can reconcile against the set actually flipped.
   const bulkOps = [];
-  const sales = [];
-  const auditMeta = [];
+  const candidates = new Map(); // id -> candidate
+  // Unique marker for THIS call — lets us identify exactly which animals our
+  // bulkWrite flipped, even if a concurrent sale flips some first (audit H-6).
+  const batchId = new mongoose.Types.ObjectId();
 
   for (const saleItem of animalsData) {
     let animal = null;
@@ -878,11 +930,14 @@ const bulkMarkAsSold = async (animalsData, userId) => {
       });
       continue;
     }
-    if (animal.status === 'Sold') {
+    // C-1: only non-terminal animals may be sold.
+    if (!LIFECYCLE_ELIGIBLE_STATUSES.includes(animal.status)) {
       results.failed.push({
         ...saleItem,
         tagId: animal.tagId,
-        error: 'Animal is already marked as sold'
+        error: animal.status === 'Sold'
+          ? 'Animal is already marked as sold'
+          : `Cannot sell animal in status '${animal.status}'`
       });
       continue;
     }
@@ -890,60 +945,29 @@ const bulkMarkAsSold = async (animalsData, userId) => {
     const sellingPrice = Number(saleItem.sellingPrice) || 0;
     const sellingCost = Number(saleItem.sellingCost) || 0;
     const soldDate = saleItem.soldDate || new Date();
-
-    const totalCost = (animal.purchasePrice || 0) +
-      (animal.purchaseTransport || 0) + (animal.purchaseMandiExpenses || 0) +
-      (animal.purchaseFuel || 0) + (animal.purchaseFood || 0) + (animal.purchaseHotel || 0) +
-      (animal.totalFeedCost || 0) +
-      (animal.totalHealthCost || 0) +
-      (animal.totalVaccinationCost || 0) +
-      (animal.totalDewormingCost || 0) +
-      (animal.totalSalaryCost || 0);
+    const totalCost = animalCosts.totalCost(animal);
     const profitFromSale = sellingPrice - totalCost - sellingCost;
+    const refId = String(animal._id);
 
-    // Conditional filter keeps the "not already Sold" guard race-safe even
-    // though we pre-checked from the lean snapshot.
     bulkOps.push({
       updateOne: {
-        filter: { _id: animal._id, status: { $ne: 'Sold' } },
+        // Race-safe: only flip an animal still in an eligible source state.
+        filter: { _id: animal._id, status: { $in: LIFECYCLE_ELIGIBLE_STATUSES } },
         update: {
           $set: {
             status: 'Sold',
             soldDate,
             soldPrice: sellingPrice,
-            soldCost: sellingCost
+            soldCost: sellingCost,
+            soldBatchId: batchId
           }
         }
       }
     });
 
-    sales.push({
-      totalCost,
-      sellingPrice,
-      sellingCost,
-      description: `Animal sale (bulk): ${animal.tagId || animal.name || animal._id}`,
-      reference: String(animal._id),
-      createdBy: userId
-    });
-
-    auditMeta.push({
-      animalId: animal._id,
-      tagId: animal.tagId,
-      name: animal.name,
-      soldDate,
-      soldPrice: sellingPrice,
-      soldCost: sellingCost,
-      totalCost,
-      profit: profitFromSale
-    });
-
-    results.success.push({
-      animalId: animal._id,
-      tagId: animal.tagId,
-      name: animal.name,
-      totalCost,
-      sellingPrice,
-      profit: profitFromSale
+    candidates.set(refId, {
+      saleItem, animal, sellingPrice, sellingCost, soldDate,
+      totalCost, profitFromSale, refId
     });
   }
 
@@ -951,26 +975,66 @@ const bulkMarkAsSold = async (animalsData, userId) => {
     return results;
   }
 
-  // ── ONE bulkWrite + ONE batched capital write, atomic together ────────
+  const auditMeta = [];
+
+  // ── ONE bulkWrite, then reconcile the ACTUALLY-flipped set, then ONE
+  //    batched capital write — all atomic together (audit H-6). ───────────
   await withTransaction(async (session) => {
-    const writeRes = await Animal.bulkWrite(
+    await Animal.bulkWrite(
       bulkOps,
       session ? { session, ordered: false } : { ordered: false }
     );
 
-    // If a concurrent caller sold some of these between our snapshot and the
-    // bulkWrite, modifiedCount < bulkOps.length. We can't cheaply tell which,
-    // but the capital batch must only reflect animals we actually flipped.
-    // In practice the conditional filter + transaction make this rare; if it
-    // happens the matched/modified mismatch is logged for reconciliation.
-    const modified = writeRes.modifiedCount ?? writeRes.nModified ?? bulkOps.length;
-    if (modified !== bulkOps.length) {
-      logger.warn(
-        `bulkMarkAsSold: expected to flip ${bulkOps.length} animals but ` +
-        `modified ${modified}; capital recorded for the requested set.`
-      );
+    // Read back exactly the animals this call flipped (stamped with batchId).
+    // If a concurrent sale won the race for some, they simply won't carry our
+    // marker and are excluded from the capital booking and reported as failed.
+    const flipped = await Animal.find({ soldBatchId: batchId })
+      .select('_id')
+      .session(session || null)
+      .lean();
+    const flippedIds = new Set(flipped.map(a => String(a._id)));
+
+    const sales = [];
+    for (const [refId, c] of candidates) {
+      if (!flippedIds.has(refId)) {
+        results.failed.push({
+          animalId: c.animal._id,
+          tagId: c.animal.tagId,
+          error: 'Sold concurrently by another request; skipped to avoid double-booking'
+        });
+        continue;
+      }
+      sales.push({
+        totalCost: c.totalCost,
+        sellingPrice: c.sellingPrice,
+        sellingCost: c.sellingCost,
+        description: `Animal sale (bulk): ${c.animal.tagId || c.animal.name || c.refId}`,
+        reference: refId,
+        createdBy: userId
+      });
+      auditMeta.push({
+        animalId: c.animal._id,
+        tagId: c.animal.tagId,
+        name: c.animal.name,
+        soldDate: c.soldDate,
+        soldPrice: c.sellingPrice,
+        soldCost: c.sellingCost,
+        totalCost: c.totalCost,
+        profit: c.profitFromSale
+      });
+      results.success.push({
+        animalId: c.animal._id,
+        tagId: c.animal.tagId,
+        name: c.animal.name,
+        totalCost: c.totalCost,
+        sellingPrice: c.sellingPrice,
+        profit: c.profitFromSale
+      });
     }
 
+    if (sales.length === 0) return; // nothing actually flipped
+
+    // Book capital for ONLY the animals this call actually flipped (audit H-6).
     await Capital.atomicRecordAnimalSaleBatch(sales, session);
   });
 
@@ -1012,12 +1076,7 @@ const restoreFromDead = async (id, userId) => {
 
   // Re-compute the loss amount the way declareDead did, so we reverse the
   // same number even if costs have drifted since.
-  const recordedLoss = animal.totalPurchaseCost +
-    (animal.totalFeedCost || 0) +
-    (animal.totalHealthCost || 0) +
-    (animal.totalVaccinationCost || 0) +
-    (animal.totalDewormingCost || 0) +
-    (animal.totalSalaryCost || 0);
+  const recordedLoss = animalCosts.totalCost(animal);
 
   const restored = await withTransaction(async (session) => {
     const updated = await Animal.findOneAndUpdate(
@@ -1074,12 +1133,7 @@ const restoreFromSold = async (id, userId) => {
     throw ApiError.badRequest(`Animal is not Sold (current status: ${animal.status})`);
   }
 
-  const totalCost = animal.totalPurchaseCost +
-    (animal.totalFeedCost || 0) +
-    (animal.totalHealthCost || 0) +
-    (animal.totalVaccinationCost || 0) +
-    (animal.totalDewormingCost || 0) +
-    (animal.totalSalaryCost || 0);
+  const totalCost = animalCosts.totalCost(animal);
   const sellingPrice = animal.soldPrice || 0;
   const sellingCost = animal.soldCost || 0;
 

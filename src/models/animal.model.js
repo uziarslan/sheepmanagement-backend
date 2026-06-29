@@ -159,6 +159,13 @@ const animalSchema = new mongoose.Schema(
       default: 0,
       min: 0
     },
+    // Per-call marker stamped during bulk mark-as-sold so the capital batch is
+    // booked ONLY for the animals this call actually flipped, not the whole
+    // requested set (audit H-6). Internal; never client-settable.
+    soldBatchId: {
+      type: mongoose.Schema.Types.ObjectId,
+      index: { sparse: true }
+    },
     // Created by user
     createdBy: {
       type: mongoose.Schema.Types.ObjectId,
@@ -171,11 +178,18 @@ const animalSchema = new mongoose.Schema(
 );
 
 // Indexes
-animalSchema.index({ tagId: 1 });
+// (tagId already gets a unique index from the field's `unique: true`.)
 animalSchema.index({ pen: 1 });
 animalSchema.index({ status: 1 });
 animalSchema.index({ animalType: 1 });
 animalSchema.index({ createdAt: -1 });
+// Compound indexes for the module's hottest filter combinations (audit L-15):
+//  - {status, pen}: pen-capacity counts (create/move-to-pen/bulk) & dashboard occupancy
+//  - {status, createdAt}: the "85+ days on farm" attention-needed query
+//  - {status, animalType}: dashboard animal-value aggregation by type
+animalSchema.index({ status: 1, pen: 1 });
+animalSchema.index({ status: 1, createdAt: -1 });
+animalSchema.index({ status: 1, animalType: 1 });
 
 // Virtual for age in months
 animalSchema.virtual('ageInMonths').get(function () {
@@ -219,10 +233,12 @@ animalSchema.virtual('totalPricePerKg').get(function () {
   return Math.round(this.totalPrice / this.weight);
 });
 
-// Virtual for profit/loss (if sold)
+// Virtual for profit/loss (if sold). Subtracts selling cost (soldCost) so it
+// matches the Sell page and the Excel export, and the backend sale calculation
+// profit = soldPrice - totalPrice - soldCost (audit L-11).
 animalSchema.virtual('profitLoss').get(function () {
   if (!this.soldPrice) return null;
-  return this.soldPrice - this.totalPrice;
+  return this.soldPrice - this.totalPrice - (this.soldCost || 0);
 });
 
 // Static method to get active animals count by pen
@@ -230,8 +246,12 @@ animalSchema.statics.getCountByPen = async function (penId) {
   return this.countDocuments({ pen: penId, status: 'Active' });
 };
 
-// Static method to recalculate animal costs (maintenance function for denormalized fields)
-// This is a maintenance function to fix drift in cost fields
+// Maintenance helper: clamp any negative denormalized cost field back to 0.
+// NOTE (audit M-2): this does NOT recompute totals from source records
+// (Treatment/Feed/Vaccination/Deworming/salary) — it only repairs the schema
+// `min:0` invariant if a field drifted negative. It is intentionally a
+// safety clamp, not a true re-derivation (salary has no per-animal source to
+// re-aggregate from). The controller message reflects this honestly.
 animalSchema.statics.recalculateCosts = async function(animalId) {
   const Animal = this;
   const animal = await Animal.findById(animalId);
