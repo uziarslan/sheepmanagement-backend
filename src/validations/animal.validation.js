@@ -8,6 +8,25 @@ const {
   ANIMAL_STATUSES
 } = require('../constants');
 
+// Whitelist of fields the list endpoint may sort by (audit L-20/L-50). Prevents
+// sorting by arbitrary / non-indexed / non-existent fields. Each comma-separated
+// token may carry a leading '-' for descending order.
+const SORTABLE_FIELDS = [
+  'tagId', 'name', 'createdAt', 'updatedAt', 'arrivalDate', 'birthDate',
+  'weight', 'buyingWeight', 'purchasePrice', 'status', 'animalType', 'breedType'
+];
+const sortString = Joi.string().custom((value, helpers) => {
+  const tokens = String(value).split(',').map((t) => t.trim()).filter(Boolean);
+  if (tokens.length === 0) return helpers.error('any.invalid');
+  for (const tok of tokens) {
+    const field = tok.startsWith('-') ? tok.slice(1) : tok;
+    if (!SORTABLE_FIELDS.includes(field)) return helpers.error('any.invalid');
+  }
+  return value;
+}, 'sort field whitelist').messages({
+  'any.invalid': `sort must be a comma-separated list of: ${SORTABLE_FIELDS.join(', ')} (optionally prefixed with '-')`
+});
+
 const createAnimal = {
   body: Joi.object().keys({
     tagId: Joi.string().trim().uppercase(),
@@ -19,7 +38,9 @@ const createAnimal = {
     sex: Joi.string().required().valid(...SEX_OPTIONS),
     purchasedFrom: Joi.string().valid(...COUNTRIES).default('Pakistan'),
     arrivalDate: Joi.date().required(),
-    birthDate: Joi.date().allow(null),
+    // Cross-field check enforced server-side (audit L-21): birth date cannot be
+    // after the arrival date. (Frontend already checks this; backend now matches.)
+    birthDate: Joi.date().allow(null).max(Joi.ref('arrivalDate')),
     purchasePrice: Joi.number().required().min(0),
     purchaseTransport: Joi.number().min(0).allow(null),
     purchaseMandiExpenses: Joi.number().min(0).allow(null),
@@ -108,7 +129,7 @@ const bulkCreate = {
         dam: Joi.string().hex().length(24).allow(null),
         notes: Joi.string().max(1000).allow('', null)
       })
-    ).min(1).required()
+    ).min(1).max(1000).required() // bounded payload — one transactional insertMany (audit L-1)
   })
 };
 
@@ -120,8 +141,8 @@ const getAnimals = {
     // in one shot. Real farm rosters are tens-to-thousands, well within
     // this ceiling. Default stays at 10 for tables.
     limit: Joi.number().integer().min(1).max(5000).default(10),
-    sort: Joi.string(),
-    search: Joi.string(),
+    sort: sortString,
+    search: Joi.string().max(100).trim(),
     status: Joi.string().valid(...ANIMAL_STATUSES),
     animalType: Joi.string().valid(...ANIMAL_TYPES),
     breedType: Joi.string().valid(...BREED_TYPES),
