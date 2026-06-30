@@ -185,19 +185,42 @@ describe('Animal API', () => {
         weight: 35
       });
 
+      // Lifecycle transitions (Sold/Dead) and purchase-cost fields are NOT
+      // accepted on the generic update endpoint — they go through mark-sold /
+      // declare-dead. A generic update only changes editable fields.
       const res = await request(app)
         .put(`/api/animals/${animal._id}`)
         .set('Authorization', `Bearer ${token}`)
         .send({
           weight: 40,
-          status: 'Sold',
-          soldPrice: 60000
+          status: 'Quarantine'
         });
 
       expect(res.status).toBe(200);
       expect(res.body.success).toBe(true);
       expect(res.body.data.weight).toBe(40);
-      expect(res.body.data.status).toBe('Sold');
+      expect(res.body.data.status).toBe('Quarantine');
+    });
+
+    it('should reject setting a lifecycle status (Sold) via generic update', async () => {
+      const animal = await Animal.create({
+        tagId: 'SHP-002',
+        animalType: 'Sheep',
+        breedType: 'Dumba',
+        subcategory: 'Fattening',
+        sex: 'Male',
+        arrivalDate: new Date(),
+        purchasePrice: 50000,
+        weight: 35
+      });
+
+      const res = await request(app)
+        .put(`/api/animals/${animal._id}`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({ status: 'Sold', sellingPrice: 60000 });
+
+      expect(res.status).toBe(400);
+      expect(res.body.success).toBe(false);
     });
   });
 

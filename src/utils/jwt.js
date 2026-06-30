@@ -8,7 +8,8 @@ const { env } = require('../config');
  */
 const generateToken = (payload) => {
   return jwt.sign(payload, env.jwtSecret, {
-    expiresIn: env.jwtExpiresIn
+    expiresIn: env.jwtExpiresIn,
+    algorithm: 'HS256'
   });
 };
 
@@ -19,7 +20,8 @@ const generateToken = (payload) => {
  */
 const generateRefreshToken = (payload) => {
   return jwt.sign(payload, env.jwtRefreshSecret, {
-    expiresIn: env.jwtRefreshExpiresIn
+    expiresIn: env.jwtRefreshExpiresIn,
+    algorithm: 'HS256'
   });
 };
 
@@ -29,11 +31,9 @@ const generateRefreshToken = (payload) => {
  * @returns {Object} Decoded payload
  */
 const verifyToken = (token) => {
-  try {
-    return jwt.verify(token, env.jwtSecret);
-  } catch (error) {
-    throw error;
-  }
+  // Pin the algorithm so a token forged with a different alg (e.g. "none" or
+  // RS/HS confusion) is rejected (audit L-16).
+  return jwt.verify(token, env.jwtSecret, { algorithms: ['HS256'] });
 };
 
 /**
@@ -42,11 +42,7 @@ const verifyToken = (token) => {
  * @returns {Object} Decoded payload
  */
 const verifyRefreshToken = (token) => {
-  try {
-    return jwt.verify(token, env.jwtRefreshSecret);
-  } catch (error) {
-    throw error;
-  }
+  return jwt.verify(token, env.jwtRefreshSecret, { algorithms: ['HS256'] });
 };
 
 /**

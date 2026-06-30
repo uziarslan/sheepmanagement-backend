@@ -154,7 +154,7 @@ const recalculateAnimalCosts = asyncHandler(async (req, res) => {
   const animal = await animalService.recalculateCosts(req.params.id);
 
   res.status(HTTP_STATUS.OK).json(
-    successResponse(animal, 'Animal costs recalculated successfully')
+    successResponse(animal, 'Animal cost fields validated (negative values clamped to 0)')
   );
 });
 
