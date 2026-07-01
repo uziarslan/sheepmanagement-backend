@@ -611,6 +611,13 @@ const bulkCreateWeightRecords = async (records, userId) => {
   // provides — bypassed by insertMany).
   const latestPerAnimal = new Map(); // animalId → { weight, date }
 
+  // Group valid incoming records by animal so previousWeight can be chained
+  // CHRONOLOGICALLY within the batch. The single-create pre-save hook chains
+  // each record off the most recent prior record; the bulk path must do the
+  // same instead of reusing one shared baseline for every record of the same
+  // animal (which corrupted weightChange/percentageChange for multi-week
+  // imports — audit math-fix).
+  const byAnimal = new Map(); // animalId → [{ data, date }]
   for (let i = 0; i < records.length; i++) {
     const data = records[i];
     const animal = animalMap.get(String(data.animal));
@@ -618,32 +625,46 @@ const bulkCreateWeightRecords = async (records, userId) => {
       errors.push({ index: i, animal: data.animal, message: 'Animal not found' });
       continue;
     }
-
-    const prevWeight = latestWeightMap.get(String(data.animal)) ?? animal.weight ?? 0;
-    const weightChange = data.weight - prevWeight;
-    const percentageChange = prevWeight > 0
-      ? Number(((weightChange / prevWeight) * 100).toFixed(2))
-      : 0;
-    const date = data.date ? new Date(data.date) : new Date();
-
-    docs.push({
-      animal: data.animal,
-      animalTagId: animal.tagId,
-      animalName: animal.name,
-      date,
-      weight: data.weight,
-      previousWeight: prevWeight,
-      weightChange: Number(weightChange.toFixed(2)),
-      percentageChange,
-      notes: data.notes || undefined,
-      recordedBy: userId,
-      createdBy: userId
-    });
-
     const key = String(data.animal);
-    const existing = latestPerAnimal.get(key);
-    if (!existing || date >= existing.date) {
-      latestPerAnimal.set(key, { weight: data.weight, date });
+    const date = data.date ? new Date(data.date) : new Date();
+    if (!byAnimal.has(key)) byAnimal.set(key, []);
+    byAnimal.get(key).push({ data, date });
+  }
+
+  for (const [key, items] of byAnimal.entries()) {
+    const animal = animalMap.get(key);
+    // Chronological order so each record chains off the previous one.
+    items.sort((a, b) => a.date - b.date);
+    // Seed from the latest pre-existing record (or the animal's current weight),
+    // matching the single-create hook's findOne({animal}).sort({date:-1}).
+    let prevWeight = latestWeightMap.get(key) ?? animal.weight ?? 0;
+
+    for (const { data, date } of items) {
+      const weightChange = data.weight - prevWeight;
+      const percentageChange = prevWeight > 0
+        ? Number(((weightChange / prevWeight) * 100).toFixed(2))
+        : 0;
+
+      docs.push({
+        animal: data.animal,
+        animalTagId: animal.tagId,
+        animalName: animal.name,
+        date,
+        weight: data.weight,
+        previousWeight: prevWeight,
+        weightChange: Number(weightChange.toFixed(2)),
+        percentageChange,
+        notes: data.notes || undefined,
+        recordedBy: userId,
+        createdBy: userId
+      });
+
+      const existing = latestPerAnimal.get(key);
+      if (!existing || date >= existing.date) {
+        latestPerAnimal.set(key, { weight: data.weight, date });
+      }
+
+      prevWeight = data.weight; // advance the chain for the next record
     }
   }
 
@@ -789,6 +810,16 @@ const bulkCreateTemperatureRecords = async (records, userId) => {
   const docs = [];
   const errors = [];
 
+  // Group valid incoming records by animal so previousTemperature/temperatureChange
+  // can be chained CHRONOLOGICALLY within the batch. The single-create pre-save
+  // hook chains each record off the most recent prior record; the bulk path
+  // (insertMany bypasses save middleware) must do the same instead of reusing one
+  // shared baseline for every record of the same animal — which corrupted
+  // temperatureChange for multi-week imports (mirrors the weight bulk fix above).
+  // NOTE: temperature has no Animal seed field (unlike weight), so a record with
+  // no prior reading keeps previousTemperature=0 / change=0, exactly as the
+  // single-create pre-save hook does.
+  const byAnimal = new Map(); // animalId → [{ data, date }]
   for (let i = 0; i < records.length; i++) {
     const data = records[i];
     const animal = animalMap.get(String(data.animal));
@@ -796,24 +827,39 @@ const bulkCreateTemperatureRecords = async (records, userId) => {
       errors.push({ index: i, animal: data.animal, message: 'Animal not found' });
       continue;
     }
+    const key = String(data.animal);
+    const date = data.date ? new Date(data.date) : new Date();
+    if (!byAnimal.has(key)) byAnimal.set(key, []);
+    byAnimal.get(key).push({ data, date });
+  }
 
-    const prevTemp = latestTempMap.get(String(data.animal)) ?? 0;
-    const tempChange = prevTemp > 0
-      ? Number((data.temperature - prevTemp).toFixed(2))
-      : 0;
+  for (const [key, items] of byAnimal.entries()) {
+    const animal = animalMap.get(key);
+    // Chronological order so each record chains off the previous one.
+    items.sort((a, b) => a.date - b.date);
+    // Seed from the latest pre-existing record only (no animal temperature field).
+    let prevTemp = latestTempMap.get(key) ?? 0;
 
-    docs.push({
-      animal: data.animal,
-      animalTagId: animal.tagId,
-      animalName: animal.name,
-      date: data.date ? new Date(data.date) : new Date(),
-      temperature: data.temperature,
-      previousTemperature: prevTemp,
-      temperatureChange: tempChange,
-      notes: data.notes || undefined,
-      recordedBy: userId,
-      createdBy: userId
-    });
+    for (const { data, date } of items) {
+      const tempChange = prevTemp > 0
+        ? Number((data.temperature - prevTemp).toFixed(2))
+        : 0;
+
+      docs.push({
+        animal: data.animal,
+        animalTagId: animal.tagId,
+        animalName: animal.name,
+        date,
+        temperature: data.temperature,
+        previousTemperature: prevTemp,
+        temperatureChange: tempChange,
+        notes: data.notes || undefined,
+        recordedBy: userId,
+        createdBy: userId
+      });
+
+      prevTemp = data.temperature; // advance the chain for the next record
+    }
   }
 
   const inserted = docs.length > 0 ? await TemperatureRecord.insertMany(docs, { ordered: false }) : [];
@@ -1059,6 +1105,17 @@ const updateHoofRecord = async (id, data, userId) => {
     { new: true, runValidators: true }
   ).populate(['animal', 'technician']);
 
+  // findByIdAndUpdate does NOT fire the model's pre('save') cost hook, so a
+  // changed cost must be reconciled into the animal's running totalHealthCost
+  // here (mirrors the create-time $inc). Without this, editing the cost leaves
+  // the animal's total stale (audit math-fix).
+  if (Object.prototype.hasOwnProperty.call(data, 'cost')) {
+    const delta = (Number(record.cost) || 0) - (Number(beforeDoc.cost) || 0);
+    if (delta !== 0 && beforeDoc.animal) {
+      await Animal.findByIdAndUpdate(beforeDoc.animal, { $inc: { totalHealthCost: delta } });
+    }
+  }
+
   const diff = diffFields(
     beforeDoc,
     record.toObject ? record.toObject() : record,
@@ -1081,9 +1138,23 @@ const updateHoofRecord = async (id, data, userId) => {
 };
 
 const deleteHoofRecord = async (id, userId) => {
-  const record = await HoofRecord.findByIdAndDelete(id);
+  const record = await HoofRecord.findById(id);
   if (!record) throw ApiError.notFound('Hoof record not found');
-  
+
+  // Reverse the cost this record added to the animal's totalHealthCost on
+  // create (pre-save hook), then delete — atomically. Mirrors deleteTreatment.
+  // Without this, deleting a hoof record left the cost charged forever.
+  await withTransaction(async (session) => {
+    if (record.cost > 0 && record.animal) {
+      await Animal.findByIdAndUpdate(
+        record.animal,
+        { $inc: { totalHealthCost: -record.cost } },
+        session ? { session } : {}
+      );
+    }
+    await HoofRecord.findByIdAndDelete(id, session ? { session } : {});
+  });
+
   // Create audit log
   logAction({
     userId,
@@ -1249,6 +1320,15 @@ const updateShearingRecord = async (id, data, userId) => {
     { new: true, runValidators: true }
   ).populate(['animal', 'technician']);
 
+  // findByIdAndUpdate bypasses the pre('save') cost hook, so reconcile a
+  // changed cost into the animal's running totalHealthCost here (audit math-fix).
+  if (Object.prototype.hasOwnProperty.call(data, 'cost')) {
+    const delta = (Number(record.cost) || 0) - (Number(beforeDoc.cost) || 0);
+    if (delta !== 0 && beforeDoc.animal) {
+      await Animal.findByIdAndUpdate(beforeDoc.animal, { $inc: { totalHealthCost: delta } });
+    }
+  }
+
   const diff = diffFields(
     beforeDoc,
     record.toObject ? record.toObject() : record,
@@ -1271,9 +1351,23 @@ const updateShearingRecord = async (id, data, userId) => {
 };
 
 const deleteShearingRecord = async (id, userId) => {
-  const record = await ShearingRecord.findByIdAndDelete(id);
+  const record = await ShearingRecord.findById(id);
   if (!record) throw ApiError.notFound('Shearing record not found');
-  
+
+  // Reverse the cost this record added to totalHealthCost on create, then
+  // delete — atomically (mirrors deleteTreatment). Without this, deleting a
+  // shearing record left the cost charged to the animal forever.
+  await withTransaction(async (session) => {
+    if (record.cost > 0 && record.animal) {
+      await Animal.findByIdAndUpdate(
+        record.animal,
+        { $inc: { totalHealthCost: -record.cost } },
+        session ? { session } : {}
+      );
+    }
+    await ShearingRecord.findByIdAndDelete(id, session ? { session } : {});
+  });
+
   logAction({
     userId,
     action: 'Shearing Record Deleted',
