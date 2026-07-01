@@ -45,10 +45,14 @@ const getAll = async (query) => {
     {
       $addFields: {
         animalCount: { $size: '$activeAnimals' },
+        // Guard against capacity <= 0 (legacy/imported data) so $divide can't
+        // throw and 500 the pen list. Valid pens (capacity >= 1, schema-enforced)
+        // are unaffected.
         occupancyPercentage: {
-          $multiply: [
-            { $divide: [{ $size: '$activeAnimals' }, '$capacity'] },
-            100
+          $cond: [
+            { $gt: ['$capacity', 0] },
+            { $multiply: [{ $divide: [{ $size: '$activeAnimals' }, '$capacity'] }, 100] },
+            0
           ]
         }
       }
@@ -83,7 +87,11 @@ const getById = async (id) => {
   return {
     ...pen.toObject(),
     animalCount,
-    occupancyPercentage: Math.round((animalCount / pen.capacity) * 100)
+    // Guard capacity <= 0 (legacy/imported data) so this never returns
+    // NaN/Infinity — matches the getAll aggregation and dashboard.service guards.
+    occupancyPercentage: pen.capacity > 0
+      ? Math.round((animalCount / pen.capacity) * 100)
+      : 0
   };
 };
 
@@ -145,7 +153,11 @@ const update = async (id, updateData, userId) => {
   return {
     ...pen.toObject(),
     animalCount,
-    occupancyPercentage: Math.round((animalCount / pen.capacity) * 100)
+    // Guard capacity <= 0 (legacy/imported data) so this never returns
+    // NaN/Infinity — matches the getAll aggregation and dashboard.service guards.
+    occupancyPercentage: pen.capacity > 0
+      ? Math.round((animalCount / pen.capacity) * 100)
+      : 0
   };
 };
 

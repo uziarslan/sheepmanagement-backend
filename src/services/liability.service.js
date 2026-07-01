@@ -19,7 +19,11 @@ const getAll = async (query, _userId) => {
   // Farm-wide: liabilities are shared across all users in this deployment.
   const filter = {};
   if (query.lenderName) {
-    filter.lenderName = new RegExp(query.lenderName, 'i');
+    // Escape regex metacharacters so user input can't inject a catastrophic
+    // pattern (ReDoS) — matches how getByLender/getLenderOutstanding already
+    // escape in this file. Preserves the contains/case-insensitive behavior.
+    const escaped = String(query.lenderName).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    filter.lenderName = new RegExp(escaped, 'i');
   }
   if (query.type) filter.type = query.type;
 
@@ -155,7 +159,8 @@ const create = async (liabilityData, userId) => {
 };
 
 /**
- * Delete liability (does not reverse capital - use with caution)
+ * Delete liability. Atomically reverses the original capital posting (a
+ * 'Liability Reversal' of the opposite sign) and deletes the record together.
  */
 const remove = async (id, userId) => {
   const liability = await Liability.findOne({ _id: id });

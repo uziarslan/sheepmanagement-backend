@@ -135,10 +135,14 @@ const getStats = async (_userId) => {
         type: 1,
         capacity: 1,
         animalCount: { $size: '$animals' },
+        // Guard against capacity <= 0 (legacy/imported data) so the aggregation
+        // can't throw a $divide-by-zero and 500 the whole dashboard. Valid pens
+        // (capacity >= 1, enforced by the schema) are unaffected.
         occupancy: {
-          $multiply: [
-            { $divide: [{ $size: '$animals' }, '$capacity'] },
-            100
+          $cond: [
+            { $gt: ['$capacity', 0] },
+            { $multiply: [{ $divide: [{ $size: '$animals' }, '$capacity'] }, 100] },
+            0
           ]
         }
       }
@@ -215,7 +219,7 @@ const getRecentActivities = async (userId, limit = 10) => {
   const activities = [
     ...animals.map(a => ({
       type: 'animal_added',
-      message: `New ${a.animalType.toLowerCase()} added: ${a.tagId}`,
+      message: `New ${(a.animalType || 'animal').toLowerCase()} added: ${a.tagId}`,
       date: a.createdAt
     })),
     ...treatments.map(t => ({
