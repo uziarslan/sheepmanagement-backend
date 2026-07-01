@@ -83,11 +83,13 @@ const getAll = async (query) => {
     filter.$expr = { $lte: ['$currentQty', '$minStockLevel'] };
   }
 
-  // Search
+  // Search. Escape regex metacharacters so user input can't inject a
+  // catastrophic-backtracking pattern (ReDoS). Preserves contains/i behavior.
   if (query.search) {
+    const escaped = String(query.search).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     filter.$or = [
-      { productName: { $regex: query.search, $options: 'i' } },
-      { supplier: { $regex: query.search, $options: 'i' } }
+      { productName: { $regex: escaped, $options: 'i' } },
+      { supplier: { $regex: escaped, $options: 'i' } }
     ];
   }
 

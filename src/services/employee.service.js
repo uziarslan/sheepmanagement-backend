@@ -25,12 +25,14 @@ const getAll = async (query) => {
   if (query.designation) filter.designation = query.designation;
   if (query.status) filter.status = query.status;
 
-  // Search
+  // Search. Escape regex metacharacters so user input can't inject a
+  // catastrophic-backtracking pattern (ReDoS). Preserves contains/i behavior.
   if (query.search) {
+    const escaped = String(query.search).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     filter.$or = [
-      { name: { $regex: query.search, $options: 'i' } },
-      { cnic: { $regex: query.search, $options: 'i' } },
-      { phone: { $regex: query.search, $options: 'i' } }
+      { name: { $regex: escaped, $options: 'i' } },
+      { cnic: { $regex: escaped, $options: 'i' } },
+      { phone: { $regex: escaped, $options: 'i' } }
     ];
   }
 
@@ -169,14 +171,15 @@ const remove = async (id) => {
     throw ApiError.notFound('Employee not found');
   }
 
-  // Deactivate linked user if exists
+  // Deactivate the linked login account if one exists. The link is stored on
+  // the User side (User.employee) — Employee has no `user` field, so the old
+  // `employee.user` check never matched and a deleted employee's login was
+  // left ACTIVE. Query by User.employee, matching separateEmployee().
   try {
-    if (employee.user) {
-      await User.findByIdAndUpdate(employee.user, {
-        isActive: false,
-        employee: null
-      });
-    }
+    await User.findOneAndUpdate(
+      { employee: id },
+      { isActive: false, employee: null }
+    );
   } catch (err) {
     // Log error but continue with employee deletion
     logger.error('Failed to deactivate linked user:', err.message || err);
